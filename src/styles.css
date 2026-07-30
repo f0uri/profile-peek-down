@@ -160,3 +160,23 @@
     color: var(--color-foreground);
   }
 }
+
+@utility ig-gradient {
+  background-image: var(--gradient-ig);
+}
+
+@utility glass-bar {
+  background-color: color-mix(in oklab, var(--card) 72%, transparent);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    font-family: var(--font-sans);
+    overscroll-behavior-y: none;
+  }
+}
