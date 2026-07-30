@@ -69,7 +69,7 @@ function uniq(list: string[]) {
 export async function fetchMediaByShortcode(shortcode: string): Promise<MediaResult> {
   const res = await fetch(
     `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
-    { headers: { "User-Agent": UA, "Accept-Language": "en-US,en;q=0.9" } },
+    { headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" } },
   );
   if (!res.ok) throw new Error("تعذر الوصول إلى المنشور");
   const text = unescapeBlob(await res.text());
