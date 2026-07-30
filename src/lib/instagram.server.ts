@@ -128,12 +128,41 @@ function parseCount(raw: string) {
   return Math.round(v);
 }
 
+async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
+  const res = await fetch(`https://www.instagram.com/${username}/embed/`, {
+    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+  });
+  const html = await res.text();
+  const rawPic = html.match(/profile_pic_url\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? "";
+  const pic = unescapeBlob(rawPic).replace(/s100x100/g, "s640x640");
+  if (!res.ok || !pic) throw new Error("إنستغرام يحدّ الطلبات مؤقتًا، حاول بعد قليل");
+  const fullName = decodeText(
+    unescapeBlob(html.match(/full_name\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? username),
+  );
+  const followers = Number(html.match(/followers_count\\*"\s*:\s*(\d+)/)?.[1] ?? 0);
+
+  return {
+    username,
+    fullName,
+    biography: "",
+    picture: pic,
+    followers,
+    following: 0,
+    posts: 0,
+    isPrivate: false,
+    isVerified: false,
+    externalUrl: null,
+    recent: [],
+  };
+}
+
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   const res = await fetch(`https://www.instagram.com/${username}/`, {
     headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
   });
   const html = await res.text();
-  if (!res.ok || /Page Not Found/i.test(html)) throw new Error("لا يوجد حساب بهذا الاسم");
+  if (res.status === 404 || /Page Not Found/i.test(html))
+    throw new Error("لا يوجد حساب بهذا الاسم");
 
   const desc = html.match(/og:description" content="([^"]*)"/)?.[1] ?? "";
   const pic = (html.match(/og:image" content="([^"]*)"/)?.[1] ?? "").replace(/&amp;/g, "&");
@@ -141,7 +170,8 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
     /([\d.,]+[KM]?)\s*Followers,\s*([\d.,]+[KM]?)\s*Following,\s*([\d.,]+[KM]?)\s*Posts/i,
   );
   const fullName = desc.match(/videos from ([^(]+)\s*\(/i)?.[1]?.trim() ?? username;
-  if (!pic) throw new Error("تعذر جلب بيانات الحساب، حاول بعد قليل");
+  if (!pic) return fetchProfileFromEmbed(username);
+
 
   return {
     username,
