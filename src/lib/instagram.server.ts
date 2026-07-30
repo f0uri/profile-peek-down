@@ -120,21 +120,68 @@ export async function fetchMediaByShortcode(shortcode: string): Promise<MediaRes
 }
 
 
-export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
-  const res = await fetch(
-    `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
-    {
-      headers: {
-        "User-Agent": UA,
-        "x-ig-app-id": "936619743392459",
-        Accept: "*/*",
-      },
-    },
+function parseCount(raw: string) {
+  const v = parseFloat(raw.replace(/,/g, ""));
+  if (Number.isNaN(v)) return 0;
+  if (/M/i.test(raw)) return Math.round(v * 1_000_000);
+  if (/K/i.test(raw)) return Math.round(v * 1_000);
+  return Math.round(v);
+}
+
+async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
+  const res = await fetch(`https://www.instagram.com/${username}/`, {
+    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+  });
+  const html = await res.text();
+  if (!res.ok || /Page Not Found/i.test(html)) throw new Error("لا يوجد حساب بهذا الاسم");
+
+  const desc = html.match(/og:description" content="([^"]*)"/)?.[1] ?? "";
+  const pic = (html.match(/og:image" content="([^"]*)"/)?.[1] ?? "").replace(/&amp;/g, "&");
+  const counts = desc.match(
+    /([\d.,]+[KM]?)\s*Followers,\s*([\d.,]+[KM]?)\s*Following,\s*([\d.,]+[KM]?)\s*Posts/i,
   );
-  if (!res.ok) throw new Error("تعذر جلب بيانات الحساب");
-  const json = (await res.json()) as any;
-  const u = json?.data?.user;
-  if (!u) throw new Error("لا يوجد حساب بهذا الاسم");
+  const fullName = desc.match(/videos from ([^(]+)\s*\(/i)?.[1]?.trim() ?? username;
+  if (!pic) throw new Error("تعذر جلب بيانات الحساب، حاول بعد قليل");
+
+  return {
+    username,
+    fullName: fullName.replace(/&#0?39;/g, "'").replace(/&amp;/g, "&"),
+    biography: "",
+    picture: pic,
+    followers: counts ? parseCount(counts[1]) : 0,
+    following: counts ? parseCount(counts[2]) : 0,
+    posts: counts ? parseCount(counts[3]) : 0,
+    isPrivate: /This account is private/i.test(html),
+    isVerified: false,
+    externalUrl: null,
+    recent: [],
+  };
+}
+
+export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
+  let u: any = null;
+  for (let attempt = 0; attempt < 2 && !u; attempt++) {
+    if (attempt) await new Promise((r) => setTimeout(r, 700));
+    try {
+      const res = await fetch(
+        `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
+        {
+          headers: {
+            "User-Agent": UA,
+            "x-ig-app-id": "936619743392459",
+            Accept: "*/*",
+          },
+        },
+      );
+      if (res.status === 404) throw new Error("لا يوجد حساب بهذا الاسم");
+      if (!res.ok) continue;
+      u = ((await res.json()) as any)?.data?.user ?? null;
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("لا يوجد")) throw e;
+    }
+  }
+  if (!u) return fetchProfileFromPage(username);
+
 
   return {
     username: u.username,
