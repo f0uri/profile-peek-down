@@ -55,12 +55,21 @@ export function parseUsername(input: string): string | null {
 
 function unescapeBlob(html: string) {
   return html
-    .replace(/\\\\\//g, "/")
-    .replace(/\\"/g, '"')
+    .replace(/\\{2,}/g, "\\")
     .replace(/\\\//g, "/")
-    .replace(/\\u0026/g, "&")
+    .replace(/\\"/g, '"')
+    .replace(/\\u([\dA-Fa-f]{4})/g, (_, c) => String.fromCharCode(parseInt(c, 16)))
     .replace(/&amp;/g, "&");
 }
+
+function decodeText(value: string) {
+  return value
+    .replace(/\\n/g, "\n")
+    .replace(/\\([^\\])/g, "$1")
+    .replace(/\\/g, "")
+    .trim();
+}
+
 
 function uniq(list: string[]) {
   return Array.from(new Set(list));
