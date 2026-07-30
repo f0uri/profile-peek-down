@@ -10,17 +10,11 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
-import { Route as ApiPublicDiagRouteImport } from './routes/api/public/diag'
 import { Route as ApiPublicDlRouteImport } from './routes/api/public/dl'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiPublicDiagRoute = ApiPublicDiagRouteImport.update({
-  id: '/api/public/diag',
-  path: '/api/public/diag',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicDlRoute = ApiPublicDlRouteImport.update({
@@ -31,31 +25,27 @@ const ApiPublicDlRoute = ApiPublicDlRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/api/public/diag': typeof ApiPublicDiagRoute
   '/api/public/dl': typeof ApiPublicDlRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/api/public/diag': typeof ApiPublicDiagRoute
   '/api/public/dl': typeof ApiPublicDlRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/api/public/diag': typeof ApiPublicDiagRoute
   '/api/public/dl': typeof ApiPublicDlRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/public/diag' | '/api/public/dl'
+  fullPaths: '/' | '/api/public/dl'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/public/diag' | '/api/public/dl'
-  id: '__root__' | '/' | '/api/public/diag' | '/api/public/dl'
+  to: '/' | '/api/public/dl'
+  id: '__root__' | '/' | '/api/public/dl'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ApiPublicDiagRoute: typeof ApiPublicDiagRoute
   ApiPublicDlRoute: typeof ApiPublicDlRoute
 }
 
@@ -66,13 +56,6 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/public/diag': {
-      id: '/api/public/diag'
-      path: '/api/public/diag'
-      fullPath: '/api/public/diag'
-      preLoaderRoute: typeof ApiPublicDiagRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/dl': {
@@ -87,7 +70,6 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ApiPublicDiagRoute: ApiPublicDiagRoute,
   ApiPublicDlRoute: ApiPublicDlRoute,
 }
 export const routeTree = rootRouteImport
