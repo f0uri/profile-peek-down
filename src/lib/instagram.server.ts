@@ -112,14 +112,13 @@ export async function fetchMediaByShortcode(shortcode: string): Promise<MediaRes
 
   return {
     shortcode,
-    caption: caption.replace(/\\n/g, "\n").replace(/\\u([\dA-Fa-f]{4})/g, (_, c) =>
-      String.fromCharCode(parseInt(c, 16)),
-    ),
+    caption: decodeText(caption),
     owner,
     ownerPic,
     items,
   };
 }
+
 
 export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
   const res = await fetch(
