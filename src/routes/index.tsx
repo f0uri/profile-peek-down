@@ -1,24 +1,392 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
+import { useState } from "react";
+import {
+  Download,
+  Link2,
+  Search,
+  Copy,
+  Check,
+  Loader2,
+  BadgeCheck,
+  Lock,
+  Play,
+  ClipboardPaste,
+  Instagram,
+} from "lucide-react";
+import type { MediaResult, ProfileResult } from "@/lib/instagram.server";
+import { getMedia, getProfile } from "@/lib/instagram.functions";
 
-// No head() here: the home route inherits title/description/og/twitter from
-// __root.tsx, and ships no og:image so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
 export const Route = createFileRoute("/")({
-  component: Index,
+  head: () => ({
+    meta: [
+      { title: "ريلز داونلودر — تنزيل ريلز وصور إنستغرام" },
+      {
+        name: "description",
+        content:
+          "نزّل ريلز وصور إنستغرام بجودة عالية من الرابط، وابحث عن الحسابات لنسخ البايو وتنزيل صورة البروفايل.",
+      },
+      { property: "og:title", content: "ريلز داونلودر — تنزيل ريلز وصور إنستغرام" },
+      {
+        property: "og:description",
+        content: "تنزيل الريلز والصور وصور البروفايل من إنستغرام بواجهة بسيطة وسريعة.",
+      },
+    ],
+  }),
+  component: Home,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
-function Index() {
+function dl(url: string, name: string) {
+  return `/api/public/dl?u=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+}
+
+function nf(n: number) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+
+function errText(e: unknown) {
+  const msg = e instanceof Error ? e.message : String(e);
+  const clean = msg.replace(/^Error:\s*/, "");
+  return /[\u0600-\u06FF]/.test(clean) ? clean : "تعذّر جلب البيانات، حاول مرة أخرى";
+}
+
+function Segmented({
+  value,
+  onChange,
+}: {
+  value: "media" | "user";
+  onChange: (v: "media" | "user") => void;
+}) {
+  const tabs = [
+    { id: "media" as const, label: "رابط الريلز", icon: Link2 },
+    { id: "user" as const, label: "بحث بالحسابات", icon: Search },
+  ];
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
+    <div className="relative grid grid-cols-2 gap-1 rounded-full bg-fill p-1">
+      {tabs.map((t) => {
+        const active = value === t.id;
+        return (
+          <button
+            key={t.id}
+            onClick={() => onChange(t.id)}
+            className={`flex items-center justify-center gap-2 rounded-full py-2.5 text-[15px] font-semibold transition-all duration-200 ${
+              active
+                ? "bg-card text-foreground shadow-card"
+                : "text-muted-foreground active:scale-95"
+            }`}
+          >
+            <t.icon className="size-4" />
+            {t.label}
+          </button>
+        );
+      })}
     </div>
+  );
+}
+
+function Field({
+  value,
+  onChange,
+  onSubmit,
+  placeholder,
+  loading,
+  prefix,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+  placeholder: string;
+  loading: boolean;
+  prefix?: string;
+}) {
+  const paste = async () => {
+    try {
+      const t = await navigator.clipboard.readText();
+      if (t) onChange(t);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 rounded-2xl bg-fill px-4 py-3">
+        {prefix ? (
+          <span className="text-[17px] font-semibold text-muted-foreground">{prefix}</span>
+        ) : null}
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onSubmit()}
+          placeholder={placeholder}
+          dir="ltr"
+          className="min-w-0 flex-1 bg-transparent text-[16px] outline-none placeholder:text-muted-foreground"
+        />
+        <button
+          onClick={paste}
+          aria-label="لصق"
+          className="shrink-0 rounded-full p-1.5 text-muted-foreground transition active:scale-90"
+        >
+          <ClipboardPaste className="size-5" />
+        </button>
+      </div>
+      <button
+        onClick={onSubmit}
+        disabled={loading || !value.trim()}
+        className="ig-gradient flex w-full items-center justify-center gap-2 rounded-2xl py-3.5 text-[17px] font-bold text-primary-foreground shadow-card transition active:scale-[0.98] disabled:opacity-45"
+      >
+        {loading ? <Loader2 className="size-5 animate-spin" /> : <Download className="size-5" />}
+        {loading ? "جاري الجلب…" : "ابدأ"}
+      </button>
+    </div>
+  );
+}
+
+function Card({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-3xl bg-card p-4 shadow-card">{children}</div>;
+}
+
+function MediaView({ data }: { data: MediaResult }) {
+  return (
+    <Card>
+      <div className="mb-3 flex items-center gap-3">
+        {data.ownerPic ? (
+          <img
+            src={data.ownerPic}
+            alt={data.owner}
+            className="size-10 rounded-full object-cover"
+            referrerPolicy="no-referrer"
+          />
+        ) : null}
+        <div className="min-w-0">
+          <p className="truncate text-[15px] font-bold">@{data.owner || "instagram"}</p>
+          <p className="text-xs text-muted-foreground">{data.items.length} ملف متاح</p>
+        </div>
+      </div>
+
+      {data.caption ? (
+        <p className="mb-3 line-clamp-4 whitespace-pre-line text-[14px] leading-6 text-muted-foreground">
+          {data.caption}
+        </p>
+      ) : null}
+
+      <div className="space-y-3">
+        {data.items.map((item, i) => (
+          <div key={i} className="overflow-hidden rounded-2xl bg-fill">
+            <div className="relative aspect-square w-full">
+              {item.thumb ? (
+                <img
+                  src={item.thumb}
+                  alt="معاينة"
+                  className="size-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+              ) : null}
+              {item.type === "video" ? (
+                <span className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full bg-foreground/70 px-3 py-1 text-xs font-semibold text-background">
+                  <Play className="size-3" /> فيديو
+                </span>
+              ) : null}
+            </div>
+            <a
+              href={dl(item.url, `${data.shortcode}-${i + 1}`)}
+              className="flex items-center justify-center gap-2 py-3 text-[16px] font-bold text-ios-blue active:opacity-60"
+            >
+              <Download className="size-4" />
+              تنزيل {item.type === "video" ? "الفيديو" : "الصورة"}
+            </a>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function ProfileView({ data }: { data: ProfileResult }) {
+  const [copied, setCopied] = useState(false);
+  const copyBio = async () => {
+    await navigator.clipboard.writeText(data.biography || "");
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1800);
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-4">
+        <div className="ig-gradient rounded-full p-[3px]">
+          <img
+            src={data.picture}
+            alt={`صورة حساب ${data.username}`}
+            className="size-20 rounded-full border-2 border-card object-cover"
+            referrerPolicy="no-referrer"
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1">
+            <p className="truncate text-[17px] font-extrabold">{data.fullName || data.username}</p>
+            {data.isVerified ? <BadgeCheck className="size-4 shrink-0 text-ios-blue" /> : null}
+            {data.isPrivate ? <Lock className="size-3.5 shrink-0 text-muted-foreground" /> : null}
+          </div>
+          <p dir="ltr" className="truncate text-right text-[14px] text-muted-foreground">
+            @{data.username}
+          </p>
+        </div>
+      </div>
+
+      <div className="my-4 grid grid-cols-3 divide-x divide-x-reverse divide-separator rounded-2xl bg-fill py-3 text-center">
+        {[
+          { l: "منشور", v: data.posts },
+          { l: "متابِع", v: data.followers },
+          { l: "يتابع", v: data.following },
+        ].map((s) => (
+          <div key={s.l}>
+            <p className="text-[17px] font-extrabold">{nf(s.v)}</p>
+            <p className="text-xs text-muted-foreground">{s.l}</p>
+          </div>
+        ))}
+      </div>
+
+      {data.biography ? (
+        <div className="rounded-2xl bg-fill p-3">
+          <p className="whitespace-pre-line text-[14px] leading-6">{data.biography}</p>
+          {data.externalUrl ? (
+            <p dir="ltr" className="mt-1 truncate text-right text-[13px] text-ios-blue">
+              {data.externalUrl}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          onClick={copyBio}
+          disabled={!data.biography}
+          className="flex items-center justify-center gap-2 rounded-2xl bg-fill py-3 text-[15px] font-bold text-foreground transition active:scale-95 disabled:opacity-40"
+        >
+          {copied ? <Check className="size-4 text-ios-blue" /> : <Copy className="size-4" />}
+          {copied ? "تم النسخ" : "نسخ البايو"}
+        </button>
+        <a
+          href={dl(data.picture, `${data.username}-profile`)}
+          className="ig-gradient flex items-center justify-center gap-2 rounded-2xl py-3 text-[15px] font-bold text-primary-foreground transition active:scale-95"
+        >
+          <Download className="size-4" />
+          صورة البروفايل
+        </a>
+      </div>
+
+      {data.recent.length ? (
+        <div className="mt-4">
+          <p className="mb-2 text-[13px] font-semibold text-muted-foreground">أحدث المنشورات</p>
+          <div className="grid grid-cols-3 gap-1.5">
+            {data.recent.map((p) => (
+              <a
+                key={p.shortcode}
+                href={`https://www.instagram.com/p/${p.shortcode}/`}
+                target="_blank"
+                rel="noreferrer"
+                className="relative aspect-square overflow-hidden rounded-xl bg-fill"
+              >
+                <img
+                  src={p.thumb}
+                  alt="منشور"
+                  className="size-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+                {p.isVideo ? (
+                  <Play className="absolute left-1.5 top-1.5 size-3.5 text-background drop-shadow" />
+                ) : null}
+              </a>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+function Home() {
+  const [tab, setTab] = useState<"media" | "user">("media");
+  const [urlInput, setUrlInput] = useState("");
+  const [userInput, setUserInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [media, setMedia] = useState<MediaResult | null>(null);
+  const [profile, setProfile] = useState<ProfileResult | null>(null);
+
+  const runMedia = useServerFn(getMedia);
+  const runProfile = useServerFn(getProfile);
+
+  const submit = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      if (tab === "media") {
+        setMedia(await runMedia({ data: { url: urlInput } }));
+      } else {
+        setProfile(await runProfile({ data: { username: userInput } }));
+      }
+    } catch (e) {
+      setError(errText(e));
+      if (tab === "media") setMedia(null);
+      else setProfile(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <main className="min-h-screen bg-background pb-16">
+      <header className="glass-bar sticky top-0 z-10 border-b border-separator px-5 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
+        <div className="mx-auto flex max-w-md items-center gap-2.5">
+          <span className="ig-gradient flex size-9 items-center justify-center rounded-xl text-primary-foreground">
+            <Instagram className="size-5" />
+          </span>
+          <div>
+            <h1 className="text-[19px] font-extrabold leading-tight">ريلز داونلودر</h1>
+            <p className="text-[12px] text-muted-foreground">ريلز • صور • بروفايلات</p>
+          </div>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-md space-y-4 px-5 pt-5">
+        <Segmented value={tab} onChange={setTab} />
+
+        <Card>
+          {tab === "media" ? (
+            <Field
+              value={urlInput}
+              onChange={setUrlInput}
+              onSubmit={submit}
+              loading={loading}
+              placeholder="https://www.instagram.com/reel/..."
+            />
+          ) : (
+            <Field
+              value={userInput}
+              onChange={setUserInput}
+              onSubmit={submit}
+              loading={loading}
+              prefix="@"
+              placeholder="username"
+            />
+          )}
+        </Card>
+
+        {error ? (
+          <div className="rounded-2xl bg-destructive/10 px-4 py-3 text-[14px] font-semibold text-destructive">
+            {error}
+          </div>
+        ) : null}
+
+        {tab === "media" && media ? <MediaView data={media} /> : null}
+        {tab === "user" && profile ? <ProfileView data={profile} /> : null}
+
+        <p className="px-2 pt-2 text-center text-[12px] leading-5 text-muted-foreground">
+          يعمل فقط مع الحسابات والمنشورات العامة. احترم حقوق أصحاب المحتوى.
+        </p>
+      </div>
+    </main>
   );
 }
