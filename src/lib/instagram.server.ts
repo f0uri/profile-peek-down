@@ -65,10 +65,14 @@ function unescapeBlob(html: string) {
 function decodeText(value: string) {
   return value
     .replace(/\\n/g, "\n")
+    .replace(/\\u([\dA-Fa-f]{4})/g, (_, c) => String.fromCharCode(parseInt(c, 16)))
     .replace(/\\([^\\])/g, "$1")
     .replace(/\\/g, "")
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, "")
+    .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
     .trim();
 }
+
 
 
 function uniq(list: string[]) {
@@ -140,11 +144,14 @@ async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
     unescapeBlob(html.match(/full_name\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? username),
   );
   const followers = Number(html.match(/followers_count\\*"\s*:\s*(\d+)/)?.[1] ?? 0);
+  const biography = decodeText(
+    unescapeBlob(html.match(/biography\\*"\s*:\s*\\*"(.*?)\\*"\s*,/)?.[1] ?? ""),
+  );
 
   return {
     username,
     fullName,
-    biography: "",
+    biography,
     picture: pic,
     followers,
     following: 0,
@@ -156,35 +163,73 @@ async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
   };
 }
 
+
+const MOBILE_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
+
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   const res = await fetch(`https://www.instagram.com/${username}/`, {
-    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+    headers: { "User-Agent": MOBILE_UA, Accept: "text/html,*/*" },
   });
   const html = await res.text();
   if (res.status === 404 || /Page Not Found/i.test(html))
     throw new Error("لا يوجد حساب بهذا الاسم");
 
   const desc = html.match(/og:description" content="([^"]*)"/)?.[1] ?? "";
-  const pic = (html.match(/og:image" content="([^"]*)"/)?.[1] ?? "").replace(/&amp;/g, "&");
+  const ogPic = (html.match(/og:image" content="([^"]*)"/)?.[1] ?? "").replace(/&amp;/g, "&");
+  const jsonPic = unescapeBlob(
+    html.match(/"profile_pic_url_hd":"(https:[^"]+)"/)?.[1] ??
+      html.match(/"profile_pic_url":"(https:[^"]+)"/)?.[1] ??
+      "",
+  );
+  const pic = jsonPic || ogPic;
   const counts = desc.match(
     /([\d.,]+[KM]?)\s*Followers,\s*([\d.,]+[KM]?)\s*Following,\s*([\d.,]+[KM]?)\s*Posts/i,
   );
-  const fullName = desc.match(/videos from ([^(]+)\s*\(/i)?.[1]?.trim() ?? username;
+  const fullName =
+    decodeText(unescapeBlob(html.match(/"full_name":"([\s\S]{0,120}?)","/)?.[1] ?? "")) ||
+    (desc.match(/videos from ([^(]+)\s*\(/i)?.[1]?.trim() ?? username);
   if (!pic) return fetchProfileFromEmbed(username);
 
+  let biography = decodeText(
+    unescapeBlob(html.match(/"biography":"([\s\S]*?)","/)?.[1] ?? ""),
+  );
+  if (!biography) {
+    const quoted = desc.match(/on Instagram:\s*(?:&quot;|")([\s\S]*?)(?:&quot;|")\s*$/i)?.[1] ?? "";
+    biography = quoted
+      .replace(/&quot;/g, '"')
+      .replace(/&#0?39;/g, "'")
+      .replace(/&#064;/g, "@")
+      .replace(/&amp;/g, "&")
+      .trim();
+  }
+
+  const followersJson = Number(html.match(/"edge_followed_by":\{"count":(\d+)\}/)?.[1] ?? 0);
+  const followingJson = Number(html.match(/"edge_follow":\{"count":(\d+)\}/)?.[1] ?? 0);
+  const postsJson = Number(
+    html.match(/"edge_owner_to_timeline_media":\{"count":(\d+)/)?.[1] ?? 0,
+  );
+  const externalUrl = unescapeBlob(html.match(/"external_url":"(https?:[^"]+)"/)?.[1] ?? "") || null;
 
   return {
     username,
     fullName: fullName.replace(/&#0?39;/g, "'").replace(/&amp;/g, "&"),
-    biography: "",
+    biography,
     picture: pic,
-    followers: counts ? parseCount(counts[1]) : 0,
-    following: counts ? parseCount(counts[2]) : 0,
-    posts: counts ? parseCount(counts[3]) : 0,
-    isPrivate: /This account is private/i.test(html),
-    isVerified: false,
-    externalUrl: null,
-    recent: [],
+    followers: followersJson || (counts ? parseCount(counts[1]) : 0),
+    following: followingJson || (counts ? parseCount(counts[2]) : 0),
+    posts: postsJson || (counts ? parseCount(counts[3]) : 0),
+    isPrivate: /"is_private":true/.test(html) || /This account is private/i.test(html),
+    isVerified: /"is_verified":true/.test(html),
+    externalUrl,
+    recent: [...html.matchAll(/"shortcode":"([A-Za-z0-9_-]+)","[\s\S]{0,600}?"display_url":"(https:[^"]+)"/g)]
+      .slice(0, 9)
+      .map((m) => ({
+        shortcode: m[1],
+        thumb: unescapeBlob(m[2]),
+        isVideo: false,
+      })),
+
   };
 }
 
