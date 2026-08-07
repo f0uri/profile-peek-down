@@ -40,6 +40,12 @@ function dl(url: string, name: string) {
   return `/api/public/dl?u=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
 }
 
+function proxy(url: string) {
+  if (!url) return "";
+  return `/api/public/dl?inline=1&u=${encodeURIComponent(url)}`;
+}
+
+
 function nf(n: number) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, "") + "M";
   if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, "") + "K";
@@ -153,10 +159,10 @@ function MediaView({ data }: { data: MediaResult }) {
       <div className="mb-3 flex items-center gap-3">
         {data.ownerPic ? (
           <img
-            src={data.ownerPic}
+            src={proxy(data.ownerPic)}
             alt={data.owner}
             className="size-10 rounded-full object-cover"
-            referrerPolicy="no-referrer"
+            loading="lazy"
           />
         ) : null}
         <div className="min-w-0">
@@ -174,21 +180,28 @@ function MediaView({ data }: { data: MediaResult }) {
       <div className="space-y-3">
         {data.items.map((item, i) => (
           <div key={i} className="overflow-hidden rounded-2xl bg-fill">
-            <div className="relative aspect-square w-full">
-              {item.thumb ? (
-                <img
-                  src={item.thumb}
-                  alt="معاينة"
-                  className="size-full object-cover"
-                  referrerPolicy="no-referrer"
-                />
-              ) : null}
-              {item.type === "video" ? (
-                <span className="absolute bottom-3 right-3 flex items-center gap-1 rounded-full bg-foreground/70 px-3 py-1 text-xs font-semibold text-background">
-                  <Play className="size-3" /> فيديو
-                </span>
-              ) : null}
-            </div>
+            {item.type === "video" ? (
+              <video
+                src={proxy(item.url)}
+                poster={item.thumb ? proxy(item.thumb) : undefined}
+                controls
+                playsInline
+                preload="metadata"
+                className="max-h-[70vh] w-full bg-foreground/5 object-contain"
+              />
+            ) : (
+              <div className="relative aspect-square w-full">
+                {item.thumb ? (
+                  <img
+                    src={proxy(item.thumb)}
+                    alt="معاينة"
+                    className="size-full object-cover"
+                    loading="lazy"
+                  />
+                ) : null}
+              </div>
+            )}
+
             <a
               href={dl(item.url, `${data.shortcode}-${i + 1}`)}
               className="flex items-center justify-center gap-2 py-3 text-[16px] font-bold text-ios-blue active:opacity-60"
@@ -216,10 +229,10 @@ function ProfileView({ data }: { data: ProfileResult }) {
       <div className="flex items-center gap-4">
         <div className="ig-gradient rounded-full p-[3px]">
           <img
-            src={data.picture}
+            src={proxy(data.picture)}
             alt={`صورة حساب ${data.username}`}
             className="size-20 rounded-full border-2 border-card object-cover"
-            referrerPolicy="no-referrer"
+
           />
         </div>
         <div className="min-w-0 flex-1">
@@ -289,11 +302,12 @@ function ProfileView({ data }: { data: ProfileResult }) {
                 className="relative aspect-square overflow-hidden rounded-xl bg-fill"
               >
                 <img
-                  src={p.thumb}
+                  src={proxy(p.thumb)}
                   alt="منشور"
                   className="size-full object-cover"
-                  referrerPolicy="no-referrer"
+                  loading="lazy"
                 />
+
                 {p.isVideo ? (
                   <Play className="absolute left-1.5 top-1.5 size-3.5 text-background drop-shadow" />
                 ) : null}
