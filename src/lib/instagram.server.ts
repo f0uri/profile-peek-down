@@ -185,10 +185,15 @@ const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
-  const res = await fetch(`https://www.instagram.com/${username}/`, {
-    headers: { "User-Agent": MOBILE_UA, Accept: "text/html,*/*" },
+  const res = await fetchRetry(`https://www.instagram.com/${username}/`, {
+    "User-Agent": MOBILE_UA,
+    Accept: "text/html,*/*",
   });
   const html = await res.text();
+  if (res.status === 429 || (!res.ok && res.status !== 404)) {
+    // Page is throttled — the embed endpoint is far less rate-limited.
+    return fetchProfileFromEmbed(username);
+  }
   if (res.status === 404 || /Page Not Found/i.test(html))
     throw new Error("لا يوجد حساب بهذا الاسم");
 
