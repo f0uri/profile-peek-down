@@ -338,7 +338,31 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
 }
 
 
+const cache = new Map<string, { at: number; data: ProfileResult }>();
+const TTL = 10 * 60 * 1000;
+
 export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
+  const key = username.toLowerCase();
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < TTL && hit.data.biography) return hit.data;
+  const data = await resolveProfile(username);
+  const prev = hit?.data;
+  const merged: ProfileResult = prev
+    ? {
+        ...data,
+        biography: data.biography || prev.biography,
+        picture: data.picture || prev.picture,
+        followers: data.followers || prev.followers,
+        following: data.following || prev.following,
+        posts: data.posts || prev.posts,
+        recent: data.recent.length ? data.recent : prev.recent,
+      }
+    : data;
+  cache.set(key, { at: Date.now(), data: merged });
+  return merged;
+}
+
+async function resolveProfile(username: string): Promise<ProfileResult> {
   let u: any = null;
   for (let attempt = 0; attempt < 2 && !u; attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, 700));
