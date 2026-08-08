@@ -138,7 +138,9 @@ async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
   });
   const html = await res.text();
   const rawPic = html.match(/profile_pic_url\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? "";
-  const pic = unescapeBlob(rawPic).replace(/s100x100/g, "s640x640");
+  // Do NOT rewrite the size segment (e.g. s100x100 -> s640x640): the CDN URL is
+  // signed, so any change makes Instagram answer 403 "URL signature mismatch".
+  const pic = unescapeBlob(rawPic);
   if (!res.ok || !pic) throw new Error("إنستغرام يحدّ الطلبات مؤقتًا، حاول بعد قليل");
   const fullName = decodeText(
     unescapeBlob(html.match(/full_name\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? username),
