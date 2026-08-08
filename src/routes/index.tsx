@@ -22,21 +22,27 @@ import { getMedia, getProfile } from "@/lib/instagram.functions";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "ريلز داونلودر — تنزيل ريلز وصور إنستغرام" },
+      { title: "داونلودر — تنزيل من إنستغرام وتيك توك ويوتيوب" },
       {
         name: "description",
         content:
-          "نزّل ريلز وصور إنستغرام بجودة عالية من الرابط، وابحث عن الحسابات لنسخ البايو وتنزيل صورة البروفايل.",
+          "نزّل الفيديوهات والصور من إنستغرام وتيك توك وإكس وفيسبوك ويوتيوب، وابحث عن حسابات إنستغرام لنسخ البايو وتنزيل صورة البروفايل.",
       },
-      { property: "og:title", content: "ريلز داونلودر — تنزيل ريلز وصور إنستغرام" },
+      { property: "og:title", content: "داونلودر — تنزيل من إنستغرام وتيك توك ويوتيوب" },
       {
         property: "og:description",
-        content: "نزّل ريلز وصور إنستغرام بجودة عالية من الرابط، وابحث عن الحسابات لنسخ البايو وتنزيل صورة البروفايل.",
+        content:
+          "نزّل الفيديوهات والصور من إنستغرام وتيك توك وإكس وفيسبوك ويوتيوب، وانسخ بايو الحسابات.",
       },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
   component: Home,
 });
+
+const PLATFORMS = ["إنستغرام", "تيك توك", "إكس (تويتر)", "فيسبوك", "يوتيوب"];
+
 
 function dl(url: string, name: string) {
   return `/api/public/dl?u=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
@@ -68,7 +74,7 @@ function Segmented({
   onChange: (v: "media" | "user") => void;
 }) {
   const tabs = [
-    { id: "media" as const, label: "رابط الريلز", icon: Link2 },
+    { id: "media" as const, label: "رابط الفيديو", icon: Link2 },
     { id: "user" as const, label: "بحث بالحسابات", icon: Search },
   ];
   return (
@@ -155,7 +161,7 @@ function Card({ children }: { children: React.ReactNode }) {
   return <div className="rounded-3xl bg-card p-4 shadow-card">{children}</div>;
 }
 
-function MediaView({ data }: { data: MediaResult }) {
+function MediaView({ data }: { data: MediaResult & { platform?: string } }) {
   return (
     <Card>
       <div className="mb-3 flex items-center gap-3">
@@ -168,7 +174,7 @@ function MediaView({ data }: { data: MediaResult }) {
           />
         ) : null}
         <div className="min-w-0">
-          <p className="truncate text-[15px] font-bold">@{data.owner || "instagram"}</p>
+          <p className="truncate text-[15px] font-bold">@{data.owner || "media"}</p>
           <p className="text-xs text-muted-foreground">{data.items.length} ملف متاح</p>
         </div>
       </div>
@@ -350,7 +356,7 @@ function Home() {
   const [userInput, setUserInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [media, setMedia] = useState<MediaResult | null>(null);
+  const [media, setMedia] = useState<(MediaResult & { platform?: string }) | null>(null);
   const [profile, setProfile] = useState<ProfileResult | null>(null);
   const [welcome, setWelcome] = useState(false);
 
@@ -415,8 +421,8 @@ function Home() {
             <Instagram className="size-5" />
           </span>
           <div>
-            <h1 className="text-[19px] font-extrabold leading-tight">ريلز داونلودر</h1>
-            <p className="text-[12px] text-muted-foreground">ريلز • صور • بروفايلات</p>
+            <h1 className="text-[19px] font-extrabold leading-tight">داونلودر</h1>
+            <p className="text-[12px] text-muted-foreground">إنستغرام • تيك توك • إكس • فيسبوك • يوتيوب</p>
           </div>
         </div>
       </header>
@@ -431,7 +437,7 @@ function Home() {
               onChange={setUrlInput}
               onSubmit={submit}
               loading={loading}
-              placeholder="https://www.instagram.com/reel/..."
+              placeholder="https://... رابط من أي منصة"
             />
           ) : (
             <Field
@@ -445,6 +451,19 @@ function Home() {
           )}
         </Card>
 
+        {tab === "media" ? (
+          <div className="flex flex-wrap justify-center gap-1.5">
+            {PLATFORMS.map((p) => (
+              <span
+                key={p}
+                className="rounded-full bg-fill px-3 py-1 text-[12px] font-semibold text-muted-foreground"
+              >
+                {p}
+              </span>
+            ))}
+          </div>
+        ) : null}
+
         {error ? (
           <div className="rounded-2xl bg-destructive/10 px-4 py-3 text-[14px] font-semibold text-destructive">
             {error}
@@ -455,7 +474,7 @@ function Home() {
         {tab === "user" && profile ? <ProfileView data={profile} /> : null}
 
         <p className="px-2 pt-2 text-center text-[12px] leading-5 text-muted-foreground">
-          يعمل فقط مع الحسابات والمنشورات العامة. احترم حقوق أصحاب المحتوى.
+          يدعم إنستغرام وتيك توك وإكس وفيسبوك ويوتيوب، ويعمل فقط مع المحتوى العام. احترم حقوق أصحاب المحتوى.
         </p>
 
         <footer className="pb-2 pt-1 text-center">

@@ -8,11 +8,10 @@ export const getMedia = createServerFn({ method: "POST" })
     return { url: input.url.trim() };
   })
   .handler(async ({ data }) => {
-    const { parseShortcode, fetchMediaByShortcode } = await import("./instagram.server");
-    const shortcode = parseShortcode(data.url);
-    if (!shortcode) throw new Error("الرابط غير صحيح، تأكد من نسخ رابط المنشور أو الريلز");
-    return fetchMediaByShortcode(shortcode);
+    const { fetchAnyMedia } = await import("./platforms.server");
+    return fetchAnyMedia(data.url);
   });
+
 
 export const getProfile = createServerFn({ method: "POST" })
   .inputValidator((input: { username: string }) => {

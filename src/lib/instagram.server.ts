@@ -146,6 +146,24 @@ function parseCount(raw: string) {
   return Math.round(v);
 }
 
+function extractEmbedPosts(html: string): ProfilePost[] {
+  const out: ProfilePost[] = [];
+  const seen = new Set<string>();
+  const re = /shortcode\\*"\s*:\s*\\*"([A-Za-z0-9_-]+)\\*"([\s\S]{0,1500}?)display_url\\*"\s*:\s*\\*"(.*?)\\*"/g;
+  for (const m of html.matchAll(re)) {
+    const code = m[1];
+    if (seen.has(code)) continue;
+    seen.add(code);
+    out.push({
+      shortcode: code,
+      thumb: unescapeBlob(m[3]),
+      isVideo: /is_video\\*"\s*:\s*true/.test(m[2]),
+    });
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
 async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
   const res = await fetchRetry(`https://www.instagram.com/${username}/embed/`, {
     "User-Agent": "Mozilla/5.0",
@@ -162,7 +180,11 @@ async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
   );
   const followers = Number(html.match(/followers_count\\*"\s*:\s*(\d+)/)?.[1] ?? 0);
   const biography = decodeText(
-    unescapeBlob(html.match(/biography\\*"\s*:\s*\\*"(.*?)\\*"\s*,/)?.[1] ?? ""),
+    unescapeBlob(
+      html.match(/biography_with_entities\\*"[\s\S]{0,80}?text\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ??
+        html.match(/biography\\*"\s*:\s*\\*"(.*?)\\*"\s*,/)?.[1] ??
+        "",
+    ),
   );
 
   return {
@@ -173,22 +195,39 @@ async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
     followers,
     following: 0,
     posts: 0,
-    isPrivate: false,
-    isVerified: false,
+    isPrivate: /is_private\\*"\s*:\s*true/.test(html),
+    isVerified: /is_verified\\*"\s*:\s*true/.test(html),
     externalUrl: null,
-    recent: [],
+    recent: extractEmbedPosts(html),
   };
 }
+
 
 
 const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
+// Crawler UAs get served the meta-tag version of the page and are throttled
+// much less often than browser UAs.
+const PAGE_UAS = [MOBILE_UA, "TelegramBot (like TwitterBot)", UA];
+
+/** Fetches the public profile page, trying several user agents against 429s. */
+async function fetchProfilePage(username: string): Promise<Response> {
+  let last: Response | null = null;
+  for (const ua of PAGE_UAS) {
+    const res = await fetchRetry(
+      `https://www.instagram.com/${username}/`,
+      { "User-Agent": ua, Accept: "text/html,*/*" },
+      2,
+    );
+    if (res.ok || res.status === 404) return res;
+    last = res;
+  }
+  return last as Response;
+}
+
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
-  const res = await fetchRetry(`https://www.instagram.com/${username}/`, {
-    "User-Agent": MOBILE_UA,
-    Accept: "text/html,*/*",
-  });
+  const res = await fetchProfilePage(username);
   const html = await res.text();
   if (res.status === 429 || (!res.ok && res.status !== 404)) {
     // Page is throttled — the embed endpoint is far less rate-limited.
@@ -196,6 +235,8 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   }
   if (res.status === 404 || /Page Not Found/i.test(html))
     throw new Error("لا يوجد حساب بهذا الاسم");
+
+
 
   const desc = html.match(/og:description" content="([^"]*)"/)?.[1] ?? "";
   const ogPic = (html.match(/og:image" content="([^"]*)"/)?.[1] ?? "").replace(/&amp;/g, "&");
@@ -255,6 +296,48 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   };
 }
 
+/** Fills gaps (bio / posts / picture) from the other public sources. */
+async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult> {
+  let out = p;
+  if (!out.recent.length || !out.picture || !out.followers) {
+    try {
+      const e = await fetchProfileFromEmbed(out.username);
+      out = {
+        ...out,
+        fullName: out.fullName || e.fullName,
+        biography: out.biography || e.biography,
+        picture: out.picture || e.picture,
+        followers: out.followers || e.followers,
+        isVerified: out.isVerified || e.isVerified,
+        recent: out.recent.length ? out.recent : e.recent,
+      };
+    } catch {
+      /* embed unavailable */
+    }
+  }
+  if (!out.biography && !fromPage) {
+    // The bio only exists on the API / profile page, never on the embed.
+    try {
+      const g = await fetchProfileFromPage(out.username);
+      out = {
+        ...out,
+        biography: g.biography,
+        fullName: out.fullName || g.fullName,
+        picture: out.picture || g.picture,
+        followers: out.followers || g.followers,
+        following: out.following || g.following,
+        posts: out.posts || g.posts,
+        externalUrl: out.externalUrl ?? g.externalUrl,
+        recent: out.recent.length ? out.recent : g.recent,
+      };
+    } catch {
+      /* page unavailable */
+    }
+  }
+  return out;
+}
+
+
 export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
   let u: any = null;
   for (let attempt = 0; attempt < 2 && !u; attempt++) {
@@ -277,10 +360,10 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
       if (e instanceof Error && e.message.includes("لا يوجد")) throw e;
     }
   }
-  if (!u) return fetchProfileFromPage(username);
+  if (!u) return enrich(await fetchProfileFromPage(username), true);
 
 
-  return {
+  return enrich({
     username: u.username,
     fullName: u.full_name ?? "",
     biography: u.biography ?? "",
@@ -298,5 +381,5 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
         thumb: e.node.thumbnail_src ?? e.node.display_url,
         isVideo: !!e.node.is_video,
       })),
-  };
+  });
 }
