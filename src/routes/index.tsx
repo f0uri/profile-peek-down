@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Download,
   Link2,
@@ -13,7 +13,9 @@ import {
   Play,
   ClipboardPaste,
   Instagram,
+  Sparkles,
 } from "lucide-react";
+
 import type { MediaResult, ProfileResult } from "@/lib/instagram.server";
 import { getMedia, getProfile } from "@/lib/instagram.functions";
 
@@ -320,6 +322,28 @@ function ProfileView({ data }: { data: ProfileResult }) {
   );
 }
 
+function WelcomeSheet({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 px-6 backdrop-blur-sm">
+      <div className="w-full max-w-xs rounded-3xl bg-card p-6 text-center shadow-card">
+        <span className="ig-gradient mx-auto mb-3 flex size-12 items-center justify-center rounded-2xl text-primary-foreground">
+          <Sparkles className="size-6" />
+        </span>
+        <p className="text-[19px] font-extrabold leading-8">لا تنسَ ذِكرَ الله</p>
+        <p className="mt-1 text-[13px] leading-6 text-muted-foreground">
+          سبحان الله • الحمد لله • الله أكبر
+        </p>
+        <button
+          onClick={onClose}
+          className="ig-gradient mt-5 w-full rounded-2xl py-3 text-[16px] font-bold text-primary-foreground transition active:scale-95"
+        >
+          متابعة
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Home() {
   const [tab, setTab] = useState<"media" | "user">("media");
   const [urlInput, setUrlInput] = useState("");
@@ -328,30 +352,63 @@ function Home() {
   const [error, setError] = useState<string | null>(null);
   const [media, setMedia] = useState<MediaResult | null>(null);
   const [profile, setProfile] = useState<ProfileResult | null>(null);
+  const [welcome, setWelcome] = useState(false);
 
   const runMedia = useServerFn(getMedia);
   const runProfile = useServerFn(getProfile);
 
-  const submit = async () => {
+  useEffect(() => {
+    if (!sessionStorage.getItem("dhikr-seen")) setWelcome(true);
+  }, []);
+
+  const closeWelcome = () => {
+    sessionStorage.setItem("dhikr-seen", "1");
+    setWelcome(false);
+  };
+
+  const lookupUser = async (value: string) => {
+    const name = value.trim().replace(/^@/, "");
+    if (!name) return;
     setLoading(true);
     setError(null);
     try {
-      if (tab === "media") {
-        setMedia(await runMedia({ data: { url: urlInput } }));
-      } else {
-        setProfile(await runProfile({ data: { username: userInput } }));
-      }
+      setProfile(await runProfile({ data: { username: name } }));
     } catch (e) {
       setError(errText(e));
-      if (tab === "media") setMedia(null);
-      else setProfile(null);
+      setProfile(null);
     } finally {
       setLoading(false);
     }
   };
 
+  // جلب الحساب والبايو تلقائيًا بعد التوقف عن الكتابة
+  useEffect(() => {
+    if (tab !== "user") return;
+    const name = userInput.trim().replace(/^@/, "");
+    if (!/^[A-Za-z0-9_.]{2,30}$/.test(name)) return;
+    const t = setTimeout(() => void lookupUser(name), 700);
+    return () => clearTimeout(t);
+  }, [userInput, tab]);
+
+  const submit = async () => {
+    if (tab === "user") return lookupUser(userInput);
+    setLoading(true);
+    setError(null);
+    try {
+      setMedia(await runMedia({ data: { url: urlInput } }));
+    } catch (e) {
+      setError(errText(e));
+      setMedia(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
   return (
     <main className="min-h-screen bg-background pb-16">
+      {welcome ? <WelcomeSheet onClose={closeWelcome} /> : null}
+
       <header className="glass-bar sticky top-0 z-10 border-b border-separator px-5 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
         <div className="mx-auto flex max-w-md items-center gap-2.5">
           <span className="ig-gradient flex size-9 items-center justify-center rounded-xl text-primary-foreground">
@@ -400,7 +457,13 @@ function Home() {
         <p className="px-2 pt-2 text-center text-[12px] leading-5 text-muted-foreground">
           يعمل فقط مع الحسابات والمنشورات العامة. احترم حقوق أصحاب المحتوى.
         </p>
+
+        <footer className="pb-2 pt-1 text-center">
+          <p className="text-[13px] font-bold">© Youssef Mansouri</p>
+          <p className="text-[11px] text-muted-foreground">جميع الحقوق محفوظة</p>
+        </footer>
       </div>
+
     </main>
   );
 }
