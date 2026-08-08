@@ -1,6 +1,20 @@
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
+/** Instagram answers 429 aggressively; retry a few times with backoff. */
+async function fetchRetry(
+  url: string,
+  headers: Record<string, string>,
+  attempts = 3,
+): Promise<Response> {
+  let res = await fetch(url, { headers });
+  for (let i = 1; i < attempts && (res.status === 429 || res.status >= 500); i++) {
+    await new Promise((r) => setTimeout(r, 500 * i));
+    res = await fetch(url, { headers });
+  }
+  return res;
+}
+
 export type MediaItem = {
   type: "image" | "video";
   url: string;
