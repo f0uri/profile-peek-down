@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Download,
   Link2,
@@ -13,7 +13,9 @@ import {
   Play,
   ClipboardPaste,
   Instagram,
+  Sparkles,
 } from "lucide-react";
+
 import type { MediaResult, ProfileResult } from "@/lib/instagram.server";
 import { getMedia, getProfile } from "@/lib/instagram.functions";
 
