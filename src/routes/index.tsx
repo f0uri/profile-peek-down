@@ -407,6 +407,8 @@ function Home() {
 
   return (
     <main className="min-h-screen bg-background pb-16">
+      {welcome ? <WelcomeSheet onClose={closeWelcome} /> : null}
+
       <header className="glass-bar sticky top-0 z-10 border-b border-separator px-5 pb-3 pt-[max(1rem,env(safe-area-inset-top))]">
         <div className="mx-auto flex max-w-md items-center gap-2.5">
           <span className="ig-gradient flex size-9 items-center justify-center rounded-xl text-primary-foreground">
