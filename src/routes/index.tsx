@@ -457,7 +457,13 @@ function Home() {
         <p className="px-2 pt-2 text-center text-[12px] leading-5 text-muted-foreground">
           يعمل فقط مع الحسابات والمنشورات العامة. احترم حقوق أصحاب المحتوى.
         </p>
+
+        <footer className="pb-2 pt-1 text-center">
+          <p className="text-[13px] font-bold">© Youssef Mansouri</p>
+          <p className="text-[11px] text-muted-foreground">جميع الحقوق محفوظة</p>
+        </footer>
       </div>
+
     </main>
   );
 }
