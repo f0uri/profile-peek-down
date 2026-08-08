@@ -32,7 +32,19 @@ export const Route = createFileRoute("/api/public/dl")({
           },
         });
         if (!upstream.ok || !upstream.body) {
-          return new Response("upstream error", { status: 502 });
+          // Expired/invalid signed CDN link: answer with a tiny transparent PNG for
+          // inline <img>/<video> usage instead of a 502 that breaks the page.
+          if (inline) {
+            const png = Uint8Array.from(
+              atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=="),
+              (c) => c.charCodeAt(0),
+            );
+            return new Response(png, {
+              status: 200,
+              headers: { "Content-Type": "image/png", "Cache-Control": "no-store" },
+            });
+          }
+          return new Response("upstream error", { status: 404 });
         }
 
         const type = upstream.headers.get("content-type") ?? "application/octet-stream";
