@@ -1,6 +1,20 @@
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
+/** Instagram answers 429 aggressively; retry a few times with backoff. */
+async function fetchRetry(
+  url: string,
+  headers: Record<string, string>,
+  attempts = 3,
+): Promise<Response> {
+  let res = await fetch(url, { headers });
+  for (let i = 1; i < attempts && (res.status === 429 || res.status >= 500); i++) {
+    await new Promise((r) => setTimeout(r, 500 * i));
+    res = await fetch(url, { headers });
+  }
+  return res;
+}
+
 export type MediaItem = {
   type: "image" | "video";
   url: string;
@@ -133,8 +147,9 @@ function parseCount(raw: string) {
 }
 
 async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
-  const res = await fetch(`https://www.instagram.com/${username}/embed/`, {
-    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+  const res = await fetchRetry(`https://www.instagram.com/${username}/embed/`, {
+    "User-Agent": "Mozilla/5.0",
+    Accept: "*/*",
   });
   const html = await res.text();
   const rawPic = html.match(/profile_pic_url\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? "";
@@ -170,10 +185,15 @@ const MOBILE_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
 
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
-  const res = await fetch(`https://www.instagram.com/${username}/`, {
-    headers: { "User-Agent": MOBILE_UA, Accept: "text/html,*/*" },
+  const res = await fetchRetry(`https://www.instagram.com/${username}/`, {
+    "User-Agent": MOBILE_UA,
+    Accept: "text/html,*/*",
   });
   const html = await res.text();
+  if (res.status === 429 || (!res.ok && res.status !== 404)) {
+    // Page is throttled — the embed endpoint is far less rate-limited.
+    return fetchProfileFromEmbed(username);
+  }
   if (res.status === 404 || /Page Not Found/i.test(html))
     throw new Error("لا يوجد حساب بهذا الاسم");
 
