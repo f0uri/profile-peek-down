@@ -147,8 +147,9 @@ function parseCount(raw: string) {
 }
 
 async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
-  const res = await fetch(`https://www.instagram.com/${username}/embed/`, {
-    headers: { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+  const res = await fetchRetry(`https://www.instagram.com/${username}/embed/`, {
+    "User-Agent": "Mozilla/5.0",
+    Accept: "*/*",
   });
   const html = await res.text();
   const rawPic = html.match(/profile_pic_url\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? "";
