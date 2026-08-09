@@ -201,6 +201,7 @@ function Card({ children }: { children: React.ReactNode }) {
 }
 
 function MediaView({ data }: { data: MediaResult & { platform?: string } }) {
+  const platform = data.platform as PlatformKey | undefined;
   return (
     <Card>
       <div className="mb-3 flex items-center gap-3">
@@ -211,8 +212,10 @@ function MediaView({ data }: { data: MediaResult & { platform?: string } }) {
             className="size-10 rounded-full object-cover"
             loading="lazy"
           />
-        ) : null}
-        <div className="min-w-0">
+        ) : (
+          <PlatformIcon platform={platform || "instagram"} className="size-10" />
+        )}
+        <div className="min-w-0 flex-1">
           <p className="truncate text-[15px] font-bold">@{data.owner || "media"}</p>
           <p className="text-xs text-muted-foreground">{data.items.length} ملف متاح</p>
         </div>
