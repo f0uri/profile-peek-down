@@ -491,15 +491,19 @@ function Home() {
         </Card>
 
         {tab === "media" ? (
-          <div className="flex flex-wrap justify-center gap-1.5">
-            {PLATFORMS.map((p) => (
-              <span
-                key={p}
-                className="rounded-full bg-fill px-3 py-1 text-[12px] font-semibold text-muted-foreground"
-              >
-                {p}
-              </span>
-            ))}
+          <div className="flex flex-wrap justify-center gap-2">
+            {PLATFORMS.map((p) => {
+              const Icon = p.icon;
+              return (
+                <span
+                  key={p.id}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-fill px-3 py-1.5 text-[12px] font-semibold text-muted-foreground"
+                >
+                  <Icon className="size-3.5" style={{ color: p.color }} />
+                  {p.label}
+                </span>
+              );
+            })}
           </div>
         ) : null}
 
