@@ -310,6 +310,73 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Bio via public search snippets (works even when Instagram blocks us entirely)
+// ---------------------------------------------------------------------------
+
+type SearchInfo = { biography: string; fullName: string };
+
+function cleanHtml(html: string) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/g, " ")
+    .replace(/<style[\s\S]*?<\/style>/g, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&quot;|&#34;/g, '"')
+    .replace(/&#x27;|&#0?39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#064;/g, "@")
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+    .replace(/\s+/g, " ");
+}
+
+function parseSnippet(text: string, username: string): SearchInfo | null {
+  const u = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const nameRe = new RegExp(`([^•|\\-–—"]{0,80}?)\\(@\\s*${u}\\s*\\)`, "i");
+  const bioRe = new RegExp(
+    `\\(@\\s*${u}\\s*\\)[^"]{0,60}"([\\s\\S]{1,600}?)(?:"|\\u2026|\\.\\.\\.)`,
+    "i",
+  );
+  const bio = text.match(bioRe)?.[1]?.trim() ?? "";
+  const name = text.match(nameRe)?.[1]?.trim() ?? "";
+  if (!bio && !name) return null;
+  return { biography: bio, fullName: name };
+}
+
+/** Tries several public search engines until one yields the profile snippet. */
+async function fetchInfoFromSearch(username: string): Promise<SearchInfo | null> {
+  const queries = [`instagram.com/${username}/`, `"@${username}" instagram`];
+  const engines = [
+    (q: string) => `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
+    (q: string) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
+    (q: string) => `https://www.startpage.com/sp/search?query=${encodeURIComponent(q)}`,
+    (q: string) => `https://search.marginalia.nu/search?query=${encodeURIComponent(q)}`,
+    (q: string) => `https://www.google.com/search?hl=en&q=${encodeURIComponent(q)}`,
+  ];
+  for (const q of queries) {
+    for (const engine of engines) {
+      try {
+        const res = await fetch(engine(q), {
+          headers: {
+            "User-Agent": randomUA(),
+            Accept: "text/html,*/*",
+            "Accept-Language": "en-US,en;q=0.9",
+          },
+        });
+        if (!res.ok) continue;
+        const hit = parseSnippet(cleanHtml(await res.text()), username);
+        if (hit?.biography) return hit;
+      } catch {
+        /* engine unavailable */
+      }
+    }
+  }
+  return null;
+}
+
+/** Bios are stable, so once found we remember them for the whole process life. */
+const bioMemory = new Map<string, { biography: string; fullName: string }>();
+
 /** Fills gaps (bio / posts / picture) from the other public sources. */
 async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult> {
   let out = p;
@@ -348,32 +415,94 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
       /* page unavailable */
     }
   }
+  // Last resort for the bio: public search snippets, then process memory.
+  if (!out.biography) {
+    const s = await fetchInfoFromSearch(out.username);
+    if (s) out = { ...out, biography: s.biography, fullName: out.fullName || s.fullName };
+  }
+  const remembered = bioMemory.get(out.username.toLowerCase());
+  if (!out.biography && remembered?.biography) {
+    out = {
+      ...out,
+      biography: remembered.biography,
+      fullName: out.fullName || remembered.fullName,
+    };
+  }
+  if (out.biography) {
+    bioMemory.set(out.username.toLowerCase(), {
+      biography: out.biography,
+      fullName: out.fullName,
+    });
+  }
   return out;
 }
 
-
 const cache = new Map<string, { at: number; data: ProfileResult }>();
-const TTL = 10 * 60 * 1000;
+const TTL = 30 * 60 * 1000;
+/** Coalesces concurrent lookups of the same username into one upstream call. */
+const inflight = new Map<string, Promise<ProfileResult>>();
+
+function merge(fresh: ProfileResult, prev?: ProfileResult): ProfileResult {
+  if (!prev) return fresh;
+  return {
+    ...fresh,
+    fullName: fresh.fullName || prev.fullName,
+    biography: fresh.biography || prev.biography,
+    picture: fresh.picture || prev.picture,
+    followers: fresh.followers || prev.followers,
+    following: fresh.following || prev.following,
+    posts: fresh.posts || prev.posts,
+    externalUrl: fresh.externalUrl ?? prev.externalUrl,
+    recent: fresh.recent.length ? fresh.recent : prev.recent,
+  };
+}
 
 export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
   const key = username.toLowerCase();
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL && hit.data.biography) return hit.data;
-  const data = await resolveProfile(username);
-  const prev = hit?.data;
-  const merged: ProfileResult = prev
-    ? {
-        ...data,
-        biography: data.biography || prev.biography,
-        picture: data.picture || prev.picture,
-        followers: data.followers || prev.followers,
-        following: data.following || prev.following,
-        posts: data.posts || prev.posts,
-        recent: data.recent.length ? data.recent : prev.recent,
+  // Cached and complete enough → answer instantly, no upstream request at all.
+  if (hit && Date.now() - hit.at < TTL && hit.data.biography && hit.data.picture) {
+    return hit.data;
+  }
+  const running = inflight.get(key);
+  if (running) return running;
+
+  const task = (async () => {
+    try {
+      const merged = merge(await resolveProfile(username), hit?.data);
+      cache.set(key, { at: Date.now(), data: merged });
+      return merged;
+    } catch (err) {
+      // Never fail a search because Instagram throttled us: serve the last
+      // known snapshot, or a search-only snapshot, instead of an error.
+      if (hit?.data) return hit.data;
+      if (err instanceof Error && err.message.includes("لا يوجد")) throw err;
+      const s = await fetchInfoFromSearch(username);
+      if (s) {
+        const fallback: ProfileResult = {
+          username,
+          fullName: s.fullName || username,
+          biography: s.biography,
+          picture: "",
+          followers: 0,
+          following: 0,
+          posts: 0,
+          isPrivate: false,
+          isVerified: false,
+          externalUrl: null,
+          recent: [],
+        };
+        cache.set(key, { at: Date.now(), data: fallback });
+        return fallback;
       }
-    : data;
-  cache.set(key, { at: Date.now(), data: merged });
-  return merged;
+      throw err;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, task);
+  return task;
 }
 
 async function resolveProfile(username: string): Promise<ProfileResult> {
@@ -385,7 +514,7 @@ async function resolveProfile(username: string): Promise<ProfileResult> {
         `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
         {
           headers: {
-            "User-Agent": UA,
+            "User-Agent": randomUA(),
             "x-ig-app-id": "936619743392459",
             Accept: "*/*",
           },
@@ -399,7 +528,6 @@ async function resolveProfile(username: string): Promise<ProfileResult> {
     }
   }
   if (!u) return enrich(await fetchProfileFromPage(username), true);
-
 
   return enrich({
     username: u.username,
@@ -421,3 +549,4 @@ async function resolveProfile(username: string): Promise<ProfileResult> {
       })),
   });
 }
+
