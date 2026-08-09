@@ -499,7 +499,9 @@ function Home() {
                   key={p.id}
                   className="inline-flex items-center gap-1.5 rounded-full bg-fill px-3 py-1.5 text-[12px] font-semibold text-muted-foreground"
                 >
-                  <Icon className="size-3.5" style={{ color: p.color }} />
+                  <span className="size-3.5" style={{ color: p.color }}>
+                    <Icon className="size-full" />
+                  </span>
                   {p.label}
                 </span>
               );
