@@ -51,7 +51,11 @@ function PlatformIcon({ platform, className }: { platform: PlatformKey | string;
   const p = PLATFORMS.find((x) => x.id === platform);
   if (!p) return null;
   const Icon = p.icon;
-  return <Icon className={className} style={{ color: p.color }} />;
+  return (
+    <span className={className} style={{ color: p.color }}>
+      <Icon className="size-full" />
+    </span>
+  );
 }
 
 export const Route = createFileRoute("/")({
@@ -76,7 +80,7 @@ export const Route = createFileRoute("/")({
   component: Home,
 });
 
-const PLATFORMS = ["إنستغرام", "تيك توك", "إكس (تويتر)", "فيسبوك", "يوتيوب"];
+
 
 
 function dl(url: string, name: string) {
