@@ -333,15 +333,21 @@ function cleanHtml(html: string) {
 function parseSnippet(text: string, username: string): SearchInfo | null {
   const u = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const nameRe = new RegExp(`([^•|\\-–—"]{0,80}?)\\(@\\s*${u}\\s*\\)`, "i");
-  const bioRe = new RegExp(
-    `\\(@\\s*${u}\\s*\\)[^"]{0,60}"([\\s\\S]{1,600}?)(?:"|\\u2026|\\.\\.\\.)`,
+  // The bio is the quoted part of the snippet; it must close with a quote or
+  // with the search engine's ellipsis, and never swallow the next result.
+  const closed = new RegExp(`\\(@\\s*${u}\\s*\\)[^"]{0,60}"([^"]{1,600})"`, "i");
+  const cut = new RegExp(
+    `\\(@\\s*${u}\\s*\\)[^"]{0,60}"([^"]{1,600}?)(?:\\u2026|\\.\\.\\.)`,
     "i",
   );
-  const bio = text.match(bioRe)?.[1]?.trim() ?? "";
+  let bio = (text.match(closed)?.[1] ?? text.match(cut)?.[1] ?? "").trim();
+  // Reject snippets that bled into unrelated search results.
+  if (/›|\bWikipedia\b|https?:\/\//i.test(bio)) bio = "";
   const name = text.match(nameRe)?.[1]?.trim() ?? "";
   if (!bio && !name) return null;
   return { biography: bio, fullName: name };
 }
+
 
 /** Tries several public search engines until one yields the profile snippet. */
 async function fetchInfoFromSearch(username: string): Promise<SearchInfo | null> {
