@@ -61,13 +61,13 @@ function PlatformIcon({ platform, className }: { platform: PlatformKey | string;
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "داونلودر — تنزيل من إنستغرام وتيك توك ويوتيوب" },
+      { title: "Save Insta — تنزيل من إنستغرام وتيك توك ويوتيوب" },
       {
         name: "description",
         content:
           "نزّل الفيديوهات والصور من إنستغرام وتيك توك وإكس وفيسبوك ويوتيوب، وابحث عن حسابات إنستغرام لنسخ البايو وتنزيل صورة البروفايل.",
       },
-      { property: "og:title", content: "داونلودر — تنزيل من إنستغرام وتيك توك ويوتيوب" },
+      { property: "og:title", content: "Save Insta — تنزيل من إنستغرام وتيك توك ويوتيوب" },
       {
         property: "og:description",
         content:
@@ -463,7 +463,7 @@ function Home() {
             <Instagram className="size-5" />
           </span>
           <div>
-            <h1 className="text-[19px] font-extrabold leading-tight">داونلودر</h1>
+            <h1 className="text-[19px] font-extrabold leading-tight">Save Insta</h1>
             <p className="text-[12px] text-muted-foreground">إنستغرام • تيك توك • إكس • فيسبوك • يوتيوب</p>
           </div>
         </div>
