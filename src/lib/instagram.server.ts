@@ -101,6 +101,52 @@ function decodeText(value: string) {
     .trim();
 }
 
+function decodeHtml(value: string) {
+  return value
+    .replace(/&#x([\dA-Fa-f]+);/g, (_, code) =>
+      String.fromCodePoint(parseInt(code, 16)),
+    )
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)))
+    .replace(/&quot;|&#34;/g, '"')
+    .replace(/&apos;|&#0?39;|&#x27;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&nbsp;/g, " ")
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+    .trim();
+}
+
+function metaContent(html: string, key: string) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`<meta[^>]+(?:name|property)=["']${escaped}["'][^>]+content=["']([\\s\\S]*?)["'][^>]*>`, "i"),
+    new RegExp(`<meta[^>]+content=["']([\\s\\S]*?)["'][^>]+(?:name|property)=["']${escaped}["'][^>]*>`, "i"),
+  ];
+  for (const pattern of patterns) {
+    const value = html.match(pattern)?.[1];
+    if (value) return decodeHtml(value);
+  }
+  return "";
+}
+
+function bioFromDescription(description: string, username: string) {
+  if (!description || !description.toLowerCase().includes(username.toLowerCase())) return "";
+  const marker = /\bon Instagram\s*:\s*/i;
+  const markerMatch = marker.exec(description);
+  if (!markerMatch) return "";
+  return description
+    .slice((markerMatch.index ?? 0) + markerMatch[0].length)
+    .replace(/^["“”]+|["“”]+$/g, "")
+    .trim();
+}
+
+function extractJsonString(source: string, field: string) {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = source.match(
+    new RegExp(`(?:"|\\\\\*")${escaped}(?:"|\\\\\*")\\s*:\\s*(?:"|\\\\\*")((?:\\\\.|[^"\\\\])*)`, "i"),
+  );
+  return match?.[1] ?? "";
+}
+
 
 
 function uniq(list: string[]) {
@@ -196,7 +242,7 @@ async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
   const biography = decodeText(
     unescapeBlob(
       html.match(/biography_with_entities\\*"[\s\S]{0,80}?text\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ??
-        html.match(/biography\\*"\s*:\s*\\*"(.*?)\\*"\s*,/)?.[1] ??
+        extractJsonString(html, "biography") ??
         "",
     ),
   );
@@ -225,24 +271,31 @@ const MOBILE_UA =
 // much less often than browser UAs.
 const PAGE_UAS = [MOBILE_UA, "TelegramBot (like TwitterBot)", UA];
 
-/** Fetches the public profile page, trying several user agents against 429s. */
-async function fetchProfilePage(username: string): Promise<Response> {
-  let last: Response | null = null;
+/** Fetches the richest public profile HTML instead of accepting Instagram's login shell. */
+async function fetchProfilePage(username: string): Promise<{ res: Response; html: string }> {
+  let last: { res: Response; html: string } | null = null;
   for (const ua of PAGE_UAS) {
     const res = await fetchRetry(
       `https://www.instagram.com/${username}/`,
       { "User-Agent": ua, Accept: "text/html,*/*" },
       2,
     );
-    if (res.ok || res.status === 404) return res;
-    last = res;
+    const html = await res.text();
+    if (res.status === 404) return { res, html };
+    last = { res, html };
+    const description = metaContent(html, "description");
+    const hasProfileMeta =
+      description.toLowerCase().includes(`@${username.toLowerCase()}`) ||
+      /Followers,\s*[\d.,]+[KM]?\s*Following/i.test(description) ||
+      new RegExp(`instagram\\.com/${username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`, "i").test(html);
+    if (res.ok && hasProfileMeta) return { res, html };
   }
-  return last as Response;
+  if (last) return last;
+  throw new Error("تعذر الوصول إلى إنستغرام");
 }
 
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
-  const res = await fetchProfilePage(username);
-  const html = await res.text();
+  const { res, html } = await fetchProfilePage(username);
   if (res.status === 429 || (!res.ok && res.status !== 404)) {
     // Page is throttled — the embed endpoint is far less rate-limited.
     return fetchProfileFromEmbed(username);
@@ -252,7 +305,8 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
 
 
 
-  const desc = html.match(/og:description" content="([^"]*)"/)?.[1] ?? "";
+  const desc = metaContent(html, "og:description");
+  const pageDescription = metaContent(html, "description");
   const ogPic = (html.match(/og:image" content="([^"]*)"/)?.[1] ?? "").replace(/&amp;/g, "&");
   const jsonPic = unescapeBlob(
     html.match(/"profile_pic_url_hd":"(https:[^"]+)"/)?.[1] ??
@@ -269,8 +323,9 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   if (!pic) return fetchProfileFromEmbed(username);
 
   let biography = decodeText(
-    unescapeBlob(html.match(/"biography":"([\s\S]*?)","/)?.[1] ?? ""),
+    unescapeBlob(extractJsonString(html, "biography")),
   );
+  if (!biography) biography = bioFromDescription(pageDescription, username);
   if (!biography) {
     const quoted = desc.match(/on Instagram:\s*(?:&quot;|")([\s\S]*?)(?:&quot;|")\s*$/i)?.[1] ?? "";
     biography = quoted
@@ -317,7 +372,7 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
 type SearchInfo = { biography: string; fullName: string };
 
 function cleanHtml(html: string) {
-  return html
+  return decodeHtml(html
     .replace(/<script[\s\S]*?<\/script>/g, " ")
     .replace(/<style[\s\S]*?<\/style>/g, " ")
     .replace(/<[^>]+>/g, " ")
@@ -327,7 +382,7 @@ function cleanHtml(html: string) {
     .replace(/&nbsp;/g, " ")
     .replace(/&#064;/g, "@")
     .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, "")
-    .replace(/\s+/g, " ");
+    .replace(/\s+/g, " "));
 }
 
 function parseSnippet(text: string, username: string): SearchInfo | null {
@@ -341,6 +396,7 @@ function parseSnippet(text: string, username: string): SearchInfo | null {
     "i",
   );
   let bio = (text.match(closed)?.[1] ?? text.match(cut)?.[1] ?? "").trim();
+  if (!bio) bio = bioFromDescription(text, username);
   // Reject snippets that bled into unrelated search results.
   if (/›|\bWikipedia\b|https?:\/\//i.test(bio)) bio = "";
   const name = text.match(nameRe)?.[1]?.trim() ?? "";
@@ -476,7 +532,7 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
   const task = (async () => {
     try {
       const merged = merge(await resolveProfile(username), hit?.data);
-      cache.set(key, { at: Date.now(), data: merged });
+      if (merged.biography) cache.set(key, { at: Date.now(), data: merged });
       return merged;
     } catch (err) {
       // Never fail a search because Instagram throttled us: serve the last
@@ -498,7 +554,7 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
           externalUrl: null,
           recent: [],
         };
-        cache.set(key, { at: Date.now(), data: fallback });
+        if (fallback.biography) cache.set(key, { at: Date.now(), data: fallback });
         return fallback;
       }
       throw err;
