@@ -139,6 +139,14 @@ function bioFromDescription(description: string, username: string) {
     .trim();
 }
 
+function extractJsonString(source: string, field: string) {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = source.match(
+    new RegExp(`(?:"|\\\\\*")${escaped}(?:"|\\\\\*")\\s*:\\s*(?:"|\\\\\*")((?:\\\\.|[^"\\\\])*)`, "i"),
+  );
+  return match?.[1] ?? "";
+}
+
 
 
 function uniq(list: string[]) {
@@ -234,7 +242,7 @@ async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
   const biography = decodeText(
     unescapeBlob(
       html.match(/biography_with_entities\\*"[\s\S]{0,80}?text\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ??
-        html.match(/biography\\*"\s*:\s*\\*"(.*?)\\*"\s*,/)?.[1] ??
+        extractJsonString(html, "biography") ??
         "",
     ),
   );
@@ -315,7 +323,7 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   if (!pic) return fetchProfileFromEmbed(username);
 
   let biography = decodeText(
-    unescapeBlob(html.match(/"biography":"([\s\S]*?)","/)?.[1] ?? ""),
+    unescapeBlob(extractJsonString(html, "biography")),
   );
   if (!biography) biography = bioFromDescription(pageDescription, username);
   if (!biography) {
@@ -524,7 +532,7 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
   const task = (async () => {
     try {
       const merged = merge(await resolveProfile(username), hit?.data);
-      cache.set(key, { at: Date.now(), data: merged });
+      if (merged.biography) cache.set(key, { at: Date.now(), data: merged });
       return merged;
     } catch (err) {
       // Never fail a search because Instagram throttled us: serve the last
@@ -546,7 +554,7 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
           externalUrl: null,
           recent: [],
         };
-        cache.set(key, { at: Date.now(), data: fallback });
+        if (fallback.biography) cache.set(key, { at: Date.now(), data: fallback });
         return fallback;
       }
       throw err;
