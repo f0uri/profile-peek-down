@@ -398,7 +398,14 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
 // Bio via public search snippets (works even when Instagram blocks us entirely)
 // ---------------------------------------------------------------------------
 
-type SearchInfo = { biography: string; fullName: string };
+type SearchInfo = {
+  biography: string;
+  fullName: string;
+  followers: number;
+  following: number;
+  posts: number;
+  shortcodes: string[];
+};
 
 function cleanHtml(html: string) {
   return decodeHtml(html
@@ -414,9 +421,34 @@ function cleanHtml(html: string) {
     .replace(/\s+/g, " "));
 }
 
+/** Post/reel shortcodes of this account that appear in a search results page. */
+function shortcodesFromResults(html: string, username: string) {
+  const esc = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const raw = decodeHtml(html).replace(/&amp;/g, "&");
+  const direct = [...raw.matchAll(
+    new RegExp(`instagram\\.com/(?:${esc}/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]{6,20})`, "gi"),
+  )].map((m) => m[1]);
+  const proxied = [...raw.matchAll(/uddg=([^&"']+)/g)]
+    .map((m) => {
+      try {
+        return decodeURIComponent(m[1]);
+      } catch {
+        return "";
+      }
+    })
+    .map((l) => l.match(/instagram\.com\/(?:[\w.]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{6,20})/i)?.[1] ?? "")
+    .filter(Boolean);
+  return Array.from(new Set([...direct, ...proxied])).slice(0, 4);
+}
+
 function parseSnippet(text: string, username: string): SearchInfo | null {
   const u = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const nameRe = new RegExp(`([^•|\\-–—"]{0,80}?)\\(@\\s*${u}\\s*\\)`, "i");
+  // "24K Followers, 6 Following, 3 Posts - Name (@user) on Instagram: "bio…"
+  const statsRe = new RegExp(
+    `([\\d.,]+\\s*[KMkm]?)\\s*[Ff]ollowers,\\s*([\\d.,]+\\s*[KMkm]?)\\s*[Ff]ollowing,\\s*([\\d.,]+\\s*[KMkm]?)\\s*[Pp]osts[\\s\\S]{0,40}?\\(@\\s*${u}\\s*\\)`,
+    "i",
+  );
   // The bio is the quoted part of the snippet; it must close with a quote or
   // with the search engine's ellipsis, and never swallow the next result.
   const closed = new RegExp(`\\(@\\s*${u}\\s*\\)[^"]{0,60}"([^"]{1,600})"`, "i");
@@ -429,41 +461,137 @@ function parseSnippet(text: string, username: string): SearchInfo | null {
   // Reject snippets that bled into unrelated search results.
   if (/›|\bWikipedia\b|https?:\/\//i.test(bio)) bio = "";
   const name = text.match(nameRe)?.[1]?.trim() ?? "";
-  if (!bio && !name) return null;
-  return { biography: bio, fullName: name };
+  const stats = text.match(statsRe);
+  if (!bio && !name && !stats) return null;
+  return {
+    biography: bio,
+    fullName: name,
+    followers: stats ? parseCount(stats[1]) : 0,
+    following: stats ? parseCount(stats[2]) : 0,
+    posts: stats ? parseCount(stats[3]) : 0,
+    shortcodes: [],
+  };
 }
 
+/** Search engines throttle too; skip an engine for a while after it refuses. */
+const engineCooldown = new Map<string, number>();
+/** Search snippets are stable, so keep whatever we found for the process life. */
+const searchMemory = new Map<string, SearchInfo>();
+
+const SEARCH_ENGINES: Array<{ name: string; url: (q: string) => string }> = [
+  { name: "brave", url: (q) => `https://search.brave.com/search?q=${encodeURIComponent(q)}` },
+  { name: "ddg", url: (q) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}` },
+  { name: "ddg-lite", url: (q) => `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}` },
+  { name: "bing", url: (q) => `https://www.bing.com/search?setlang=en&q=${encodeURIComponent(q)}` },
+  { name: "startpage", url: (q) => `https://www.startpage.com/sp/search?query=${encodeURIComponent(q)}` },
+  { name: "mojeek", url: (q) => `https://www.mojeek.com/search?q=${encodeURIComponent(q)}` },
+  { name: "google", url: (q) => `https://www.google.com/search?hl=en&q=${encodeURIComponent(q)}` },
+];
 
 /** Tries several public search engines until one yields the profile snippet. */
 async function fetchInfoFromSearch(username: string): Promise<SearchInfo | null> {
-  const queries = [`instagram.com/${username}/`, `"@${username}" instagram`];
-  const engines = [
-    (q: string) => `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
-    (q: string) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
-    (q: string) => `https://www.startpage.com/sp/search?query=${encodeURIComponent(q)}`,
-    (q: string) => `https://search.marginalia.nu/search?query=${encodeURIComponent(q)}`,
-    (q: string) => `https://www.google.com/search?hl=en&q=${encodeURIComponent(q)}`,
+  const key = username.toLowerCase();
+  const remembered = searchMemory.get(key);
+  if (remembered?.biography) return remembered;
+
+  const queries = [
+    `instagram.com/${username}/`,
+    `"@${username}" instagram`,
+    `${username} instagram profile`,
   ];
+  let best: SearchInfo | null = remembered ?? null;
   for (const q of queries) {
-    for (const engine of engines) {
+    for (const engine of SEARCH_ENGINES) {
+      if ((engineCooldown.get(engine.name) ?? 0) > Date.now()) continue;
       try {
-        const res = await fetch(engine(q), {
+        const res = await fetch(engine.url(q), {
           headers: {
             "User-Agent": randomUA(),
             Accept: "text/html,*/*",
             "Accept-Language": "en-US,en;q=0.9",
           },
         });
-        if (!res.ok) continue;
-        const hit = parseSnippet(cleanHtml(await res.text()), username);
-        if (hit?.biography) return hit;
+        const html = res.ok ? await res.text() : "";
+        // DuckDuckGo answers 200/202 with an "anomaly" page when throttling.
+        if (!html || /anomaly|unusual traffic|captcha/i.test(html.slice(0, 4000))) {
+          engineCooldown.set(engine.name, Date.now() + 5 * 60 * 1000);
+          continue;
+        }
+        const hit = parseSnippet(cleanHtml(html), username);
+        if (!hit) continue;
+        hit.shortcodes = shortcodesFromResults(html, username);
+        best = {
+          biography: best?.biography || hit.biography,
+          fullName: best?.fullName || hit.fullName,
+          followers: best?.followers || hit.followers,
+          following: best?.following || hit.following,
+          posts: best?.posts || hit.posts,
+          shortcodes: Array.from(new Set([...(best?.shortcodes ?? []), ...hit.shortcodes])),
+        };
+        if (best.biography) {
+          searchMemory.set(key, best);
+          return best;
+        }
       } catch {
-        /* engine unavailable */
+        engineCooldown.set(engine.name, Date.now() + 2 * 60 * 1000);
       }
+    }
+  }
+  if (best) searchMemory.set(key, best);
+  return best;
+}
+
+/**
+ * Profile embeds (/{user}/embed/) now answer 404, but post embeds are still
+ * public and carry the owner's signed avatar URL — so we read the avatar and
+ * post thumbnails from a recent post of that account instead.
+ */
+async function fetchProfileFromPostEmbed(
+  username: string,
+  known: string[] = [],
+): Promise<{ picture: string; fullName: string; recent: ProfilePost[] } | null> {
+  const search = await fetchInfoFromSearch(username);
+  const codes = Array.from(new Set([...known, ...(search?.shortcodes ?? [])])).slice(0, 4);
+  for (const code of codes) {
+    try {
+      const res = await fetchRetry(
+        `https://www.instagram.com/p/${code}/embed/captioned/`,
+        { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+        2,
+      );
+      if (!res.ok) continue;
+      const html = await res.text();
+      const owner = html.match(
+        /class="Avatar"\s+href="https:\/\/www\.instagram\.com\/([\w.]+)\//i,
+      )?.[1];
+      // Unavailable posts make Instagram serve someone else's content.
+      if (!owner || owner.toLowerCase() !== username.toLowerCase()) continue;
+      const picture = decodeHtml(
+        html.match(/class="Avatar"[\s\S]{0,600}?<img[^>]*src="([^"]+)"/i)?.[1] ?? "",
+      );
+      const thumb = decodeHtml(
+        html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/i)?.[1] ??
+          html.match(/<img[^>]+class="EmbeddedMediaImage"[\s\S]{0,200}?src="([^"]+)"/i)?.[1] ??
+          "",
+      );
+      const fullName = decodeHtml(
+        html.match(/class="FullName"[^>]*>([^<]*)</i)?.[1] ?? "",
+      );
+      if (!picture) continue;
+      return {
+        picture,
+        fullName,
+        recent: thumb
+          ? [{ shortcode: code, thumb, isVideo: /GraphVideo|"is_video":true/.test(html) }]
+          : [],
+      };
+    } catch {
+      /* try the next post */
     }
   }
   return null;
 }
+
 
 /** Bios are stable, so once found we remember them for the whole process life. */
 const bioMemory = new Map<string, { biography: string; fullName: string }>();
