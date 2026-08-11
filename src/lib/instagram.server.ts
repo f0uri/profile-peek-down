@@ -235,61 +235,26 @@ function parseCount(raw: string) {
   return Math.round(v);
 }
 
-function extractEmbedPosts(html: string): ProfilePost[] {
-  const out: ProfilePost[] = [];
-  const seen = new Set<string>();
-  const re = /shortcode\\*"\s*:\s*\\*"([A-Za-z0-9_-]+)\\*"([\s\S]{0,1500}?)display_url\\*"\s*:\s*\\*"(.*?)\\*"/g;
-  for (const m of html.matchAll(re)) {
-    const code = m[1];
-    if (seen.has(code)) continue;
-    seen.add(code);
-    out.push({
-      shortcode: code,
-      thumb: unescapeBlob(m[3]),
-      isVideo: /is_video\\*"\s*:\s*true/.test(m[2]),
-    });
-    if (out.length >= 12) break;
-  }
-  return out;
-}
-
-async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
-  const res = await fetchRetry(`https://www.instagram.com/${username}/embed/`, {
-    "User-Agent": "Mozilla/5.0",
-    Accept: "*/*",
-  });
-  const html = await res.text();
-  const rawPic = html.match(/profile_pic_url\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? "";
-  // Do NOT rewrite the size segment (e.g. s100x100 -> s640x640): the CDN URL is
-  // signed, so any change makes Instagram answer 403 "URL signature mismatch".
-  const pic = unescapeBlob(rawPic);
-  if (!res.ok || !pic) throw new Error("إنستغرام يحدّ الطلبات مؤقتًا، حاول بعد قليل");
-  const fullName = decodeText(
-    unescapeBlob(html.match(/full_name\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? username),
-  );
-  const followers = Number(html.match(/followers_count\\*"\s*:\s*(\d+)/)?.[1] ?? 0);
-  const biography = decodeText(
-    unescapeBlob(
-      html.match(/biography_with_entities\\*"[\s\S]{0,80}?text\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ??
-        extractJsonString(html, "biography") ??
-        "",
-    ),
-  );
-
+/** Builds a profile purely from public search snippets + a post embed avatar. */
+async function buildFallbackProfile(username: string): Promise<ProfileResult> {
+  const s = await fetchInfoFromSearch(username);
+  const remembered = bioMemory.get(username.toLowerCase());
+  const post = await fetchProfileFromPostEmbed(username, s?.shortcodes ?? []);
   return {
     username,
-    fullName,
-    biography,
-    picture: pic,
-    followers,
-    following: 0,
-    posts: 0,
-    isPrivate: /is_private\\*"\s*:\s*true/.test(html),
-    isVerified: /is_verified\\*"\s*:\s*true/.test(html),
+    fullName: s?.fullName || post?.fullName || remembered?.fullName || username,
+    biography: s?.biography || remembered?.biography || "",
+    picture: post?.picture ?? "",
+    followers: s?.followers ?? 0,
+    following: s?.following ?? 0,
+    posts: s?.posts ?? 0,
+    isPrivate: false,
+    isVerified: false,
     externalUrl: null,
-    recent: extractEmbedPosts(html),
+    recent: post?.recent ?? [],
   };
 }
+
 
 
 
