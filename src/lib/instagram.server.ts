@@ -699,42 +699,13 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
       // known snapshot, or a search-only snapshot, instead of an error.
       if (hit?.data) return hit.data;
       if (err instanceof Error && err.message.includes("لا يوجد")) throw err;
-      const s = await fetchInfoFromSearch(username);
-      if (s) {
-        const fallback: ProfileResult = {
-          username,
-          fullName: s.fullName || username,
-          biography: s.biography,
-          picture: "",
-          followers: 0,
-          following: 0,
-          posts: 0,
-          isPrivate: false,
-          isVerified: false,
-          externalUrl: null,
-          recent: [],
-        };
-        cache.set(key, { at: Date.now(), data: fallback });
-        return fallback;
-      }
       // A rate limit is an upstream availability issue, not a user-facing
-      // application error. Return a stable partial profile and cache it briefly
-      // instead of rejecting the server function and blanking the page.
-      const fallback: ProfileResult = {
-        username,
-        fullName: username,
-        biography: "",
-        picture: "",
-        followers: 0,
-        following: 0,
-        posts: 0,
-        isPrivate: false,
-        isVerified: false,
-        externalUrl: null,
-        recent: [],
-      };
+      // application error: serve a snapshot built from public search snippets
+      // and a post embed avatar, and cache it briefly.
+      const fallback = await buildFallbackProfile(username);
       cache.set(key, { at: Date.now(), data: fallback });
       return fallback;
+
     } finally {
       inflight.delete(key);
     }
