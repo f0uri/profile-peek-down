@@ -19,8 +19,10 @@ function randomUA() {
  * so many username searches in a row never look like a burst to Instagram.
  */
 const MIN_GAP = 1200;
+const RATE_LIMIT_COOLDOWN = 10 * 60 * 1000;
 let gate: Promise<void> = Promise.resolve();
 let lastAt = 0;
+let blockedUntil = 0;
 function paced<T>(task: () => Promise<T>): Promise<T> {
   const run = gate.then(async () => {
     const wait = Math.max(0, MIN_GAP - (Date.now() - lastAt)) + Math.random() * 250;
@@ -37,10 +39,19 @@ async function fetchRetry(
   headers: Record<string, string>,
   attempts = 3,
 ): Promise<Response> {
+  if (Date.now() < blockedUntil) {
+    return new Response(null, { status: 429, statusText: "Too Many Requests" });
+  }
   let res = await paced(() => fetch(url, { headers }));
   for (let i = 1; i < attempts && (res.status === 429 || res.status >= 500); i++) {
     await new Promise((r) => setTimeout(r, 800 * i + Math.random() * 400));
     res = await paced(() => fetch(url, { headers: { ...headers, "User-Agent": randomUA() } }));
+  }
+  if (res.status === 429) {
+    const retryAfter = Number(res.headers.get("retry-after"));
+    blockedUntil = Date.now() + (Number.isFinite(retryAfter) && retryAfter > 0
+      ? retryAfter * 1000
+      : RATE_LIMIT_COOLDOWN);
   }
   return res;
 }
@@ -519,6 +530,7 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
 
 const cache = new Map<string, { at: number; data: ProfileResult }>();
 const TTL = 6 * 60 * 60 * 1000;
+const PARTIAL_TTL = 10 * 60 * 1000;
 /** Coalesces concurrent lookups of the same username into one upstream call. */
 const inflight = new Map<string, Promise<ProfileResult>>();
 
@@ -556,8 +568,10 @@ async function refreshInBackground(key: string, username: string, prev: ProfileR
 export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
   const key = username.toLowerCase();
   const hit = cache.get(key);
-  // Cached and complete enough → answer instantly, no upstream request at all.
-  if (hit && Date.now() - hit.at < TTL && hit.data.biography && hit.data.picture) {
+  // Complete snapshots live for six hours. Partial snapshots also get a short
+  // cooldown so an unavailable account cannot trigger a request on every keypress.
+  const complete = !!(hit?.data.biography && hit.data.picture);
+  if (hit && Date.now() - hit.at < (complete ? TTL : PARTIAL_TTL)) {
     return hit.data;
   }
   // Stale snapshot: answer instantly and refresh in the background, so rapid
@@ -594,10 +608,27 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
           externalUrl: null,
           recent: [],
         };
-        if (fallback.biography) cache.set(key, { at: Date.now(), data: fallback });
+        cache.set(key, { at: Date.now(), data: fallback });
         return fallback;
       }
-      throw err;
+      // A rate limit is an upstream availability issue, not a user-facing
+      // application error. Return a stable partial profile and cache it briefly
+      // instead of rejecting the server function and blanking the page.
+      const fallback: ProfileResult = {
+        username,
+        fullName: username,
+        biography: "",
+        picture: "",
+        followers: 0,
+        following: 0,
+        posts: 0,
+        isPrivate: false,
+        isVerified: false,
+        externalUrl: null,
+        recent: [],
+      };
+      cache.set(key, { at: Date.now(), data: fallback });
+      return fallback;
     } finally {
       inflight.delete(key);
     }
