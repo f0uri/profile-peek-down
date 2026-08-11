@@ -291,9 +291,10 @@ async function fetchProfilePage(username: string): Promise<{ res: Response; html
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   const { res, html } = await fetchProfilePage(username);
   if (res.status === 429 || (!res.ok && res.status !== 404)) {
-    // Page is throttled — the embed endpoint is far less rate-limited.
-    return fetchProfileFromEmbed(username);
+    // Page is throttled — fall back to search snippets + post embed.
+    return buildFallbackProfile(username);
   }
+
   if (res.status === 404 || /Page Not Found/i.test(html))
     throw new Error("لا يوجد حساب بهذا الاسم");
 
