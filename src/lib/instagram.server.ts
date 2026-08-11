@@ -407,37 +407,76 @@ function shortcodesFromResults(html: string, username: string) {
   return Array.from(new Set([...direct, ...proxied])).slice(0, 4);
 }
 
+/** Junk that proves the captured text is search-page chrome, not a bio. */
+const NOT_A_BIO =
+  /›|\bWikipedia\b|https?:\/\/|www\.|Followers,|Instagram photos and videos|Past (?:Day|Week|Month|Year)|Any Time/i;
+
 function parseSnippet(text: string, username: string): SearchInfo | null {
   const u = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const nameRe = new RegExp(`([^•|\\-–—"]{0,80}?)\\(@\\s*${u}\\s*\\)`, "i");
-  // "24K Followers, 6 Following, 3 Posts - Name (@user) on Instagram: "bio…"
-  const statsRe = new RegExp(
-    `([\\d.,]+\\s*[KMkm]?)\\s*[Ff]ollowers,\\s*([\\d.,]+\\s*[KMkm]?)\\s*[Ff]ollowing,\\s*([\\d.,]+\\s*[KMkm]?)\\s*[Pp]osts[\\s\\S]{0,40}?\\(@\\s*${u}\\s*\\)`,
-    "i",
-  );
-  // The bio is the quoted part of the snippet; it must close with a quote or
-  // with the search engine's ellipsis, and never swallow the next result.
-  const closed = new RegExp(`\\(@\\s*${u}\\s*\\)[^"]{0,60}"([^"]{1,600})"`, "i");
-  const cut = new RegExp(
-    `\\(@\\s*${u}\\s*\\)[^"]{0,60}"([^"]{1,600}?)(?:\\u2026|\\.\\.\\.)`,
-    "i",
-  );
-  let bio = (text.match(closed)?.[1] ?? text.match(cut)?.[1] ?? "").trim();
-  if (!bio) bio = bioFromDescription(text, username);
-  // Reject snippets that bled into unrelated search results.
-  if (/›|\bWikipedia\b|https?:\/\//i.test(bio)) bio = "";
-  const name = text.match(nameRe)?.[1]?.trim() ?? "";
-  const stats = text.match(statsRe);
-  if (!bio && !name && !stats) return null;
-  return {
-    biography: bio,
-    fullName: name,
-    followers: stats ? parseCount(stats[1]) : 0,
-    following: stats ? parseCount(stats[2]) : 0,
-    posts: stats ? parseCount(stats[3]) : 0,
+  const marker = `(@${username})`;
+  const lower = text.toLowerCase();
+  const markerLower = marker.toLowerCase();
+
+  const out: SearchInfo = {
+    biography: "",
+    fullName: "",
+    followers: 0,
+    following: 0,
+    posts: 0,
     shortcodes: [],
   };
+
+  let at = lower.indexOf(markerLower);
+  let guard = 0;
+  while (at >= 0 && guard++ < 6) {
+    // Keep the parsing window tight: one search result only, cut before the
+    // next "(@someone)" so a neighbouring account never bleeds in.
+    const before = text.slice(Math.max(0, at - 200), at);
+    let after = text.slice(at + marker.length, at + marker.length + 700);
+    const nextAccount = after.search(/\(@/);
+    if (nextAccount > 0) after = after.slice(0, nextAccount);
+    const window = `${before}${marker}${after}`;
+
+    if (!out.followers) {
+      const stats = window.match(
+        /([\d.,]+\s*[KMkm]?)\s*[Ff]ollowers,\s*([\d.,]+\s*[KMkm]?)\s*[Ff]ollowing,\s*([\d.,]+\s*[KMkm]?)\s*[Pp]osts/,
+      );
+      if (stats) {
+        out.followers = parseCount(stats[1]);
+        out.following = parseCount(stats[2]);
+        out.posts = parseCount(stats[3]);
+      }
+    }
+
+    if (!out.fullName) {
+      const name = before.match(new RegExp(`([^•|"›\\n]{2,60}?)\\s*$`))?.[1]?.trim() ?? "";
+      if (name && !NOT_A_BIO.test(name) && !/^[-–—]/.test(name)) out.fullName = name;
+    }
+
+    if (!out.biography) {
+      const quoted =
+        after.match(/on Instagram\s*:\s*"([\s\S]{1,600}?)(?:"|\u2026|\.\.\.)/i)?.[1] ??
+        after.match(/^\s*[^"]{0,40}"([\s\S]{1,600}?)(?:"|\u2026|\.\.\.)/)?.[1] ??
+        "";
+      const bio = quoted.trim();
+      if (bio && !NOT_A_BIO.test(bio)) out.biography = bio;
+    }
+
+    at = lower.indexOf(markerLower, at + 1);
+  }
+
+  if (!out.biography) {
+    const fromDesc = bioFromDescription(text, username).slice(0, 600).trim();
+    if (fromDesc && !NOT_A_BIO.test(fromDesc)) out.biography = fromDesc;
+  }
+  const namedRe = new RegExp(`from\\s+([^•|"()]{2,60}?)\\s*\\(@\\s*${u}\\s*\\)`, "i");
+  if (!out.fullName) out.fullName = text.match(namedRe)?.[1]?.trim() ?? "";
+  if (out.fullName && NOT_A_BIO.test(out.fullName)) out.fullName = "";
+
+  if (!out.biography && !out.fullName && !out.followers) return null;
+  return out;
 }
+
 
 /** Search engines throttle too; skip an engine for a while after it refuses. */
 const engineCooldown = new Map<string, number>();
