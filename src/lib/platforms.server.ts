@@ -113,7 +113,11 @@ async function fetchYouTube(url: string): Promise<MediaResult> {
 
 export async function fetchAnyMedia(url: string): Promise<MediaResult & { platform: Platform }> {
   const platform = detectPlatform(url);
-  if (!platform) throw new Error("المنصة غير مدعومة، الروابط المدعومة: انستغرام، تيك توك، إكس، فيسبوك، يوتيوب");
+  if (!platform)
+    throw new Error(
+      "الصق رابط منشور صحيح من إنستغرام أو تيك توك أو إكس أو فيسبوك أو يوتيوب (للبحث عن حساب استخدم تبويب البحث بالمستخدم)",
+    );
+
 
   if (platform === "instagram") {
     const { parseShortcode, fetchMediaByShortcode } = await import("./instagram.server");
