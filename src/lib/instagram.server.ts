@@ -235,61 +235,26 @@ function parseCount(raw: string) {
   return Math.round(v);
 }
 
-function extractEmbedPosts(html: string): ProfilePost[] {
-  const out: ProfilePost[] = [];
-  const seen = new Set<string>();
-  const re = /shortcode\\*"\s*:\s*\\*"([A-Za-z0-9_-]+)\\*"([\s\S]{0,1500}?)display_url\\*"\s*:\s*\\*"(.*?)\\*"/g;
-  for (const m of html.matchAll(re)) {
-    const code = m[1];
-    if (seen.has(code)) continue;
-    seen.add(code);
-    out.push({
-      shortcode: code,
-      thumb: unescapeBlob(m[3]),
-      isVideo: /is_video\\*"\s*:\s*true/.test(m[2]),
-    });
-    if (out.length >= 12) break;
-  }
-  return out;
-}
-
-async function fetchProfileFromEmbed(username: string): Promise<ProfileResult> {
-  const res = await fetchRetry(`https://www.instagram.com/${username}/embed/`, {
-    "User-Agent": "Mozilla/5.0",
-    Accept: "*/*",
-  });
-  const html = await res.text();
-  const rawPic = html.match(/profile_pic_url\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? "";
-  // Do NOT rewrite the size segment (e.g. s100x100 -> s640x640): the CDN URL is
-  // signed, so any change makes Instagram answer 403 "URL signature mismatch".
-  const pic = unescapeBlob(rawPic);
-  if (!res.ok || !pic) throw new Error("إنستغرام يحدّ الطلبات مؤقتًا، حاول بعد قليل");
-  const fullName = decodeText(
-    unescapeBlob(html.match(/full_name\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ?? username),
-  );
-  const followers = Number(html.match(/followers_count\\*"\s*:\s*(\d+)/)?.[1] ?? 0);
-  const biography = decodeText(
-    unescapeBlob(
-      html.match(/biography_with_entities\\*"[\s\S]{0,80}?text\\*"\s*:\s*\\*"(.*?)\\*"/)?.[1] ??
-        extractJsonString(html, "biography") ??
-        "",
-    ),
-  );
-
+/** Builds a profile purely from public search snippets + a post embed avatar. */
+async function buildFallbackProfile(username: string): Promise<ProfileResult> {
+  const s = await fetchInfoFromSearch(username);
+  const remembered = bioMemory.get(username.toLowerCase());
+  const post = await fetchProfileFromPostEmbed(username, s?.shortcodes ?? []);
   return {
     username,
-    fullName,
-    biography,
-    picture: pic,
-    followers,
-    following: 0,
-    posts: 0,
-    isPrivate: /is_private\\*"\s*:\s*true/.test(html),
-    isVerified: /is_verified\\*"\s*:\s*true/.test(html),
+    fullName: s?.fullName || post?.fullName || remembered?.fullName || username,
+    biography: s?.biography || remembered?.biography || "",
+    picture: post?.picture ?? "",
+    followers: s?.followers ?? 0,
+    following: s?.following ?? 0,
+    posts: s?.posts ?? 0,
+    isPrivate: false,
+    isVerified: false,
     externalUrl: null,
-    recent: extractEmbedPosts(html),
+    recent: post?.recent ?? [],
   };
 }
+
 
 
 
@@ -326,9 +291,10 @@ async function fetchProfilePage(username: string): Promise<{ res: Response; html
 async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   const { res, html } = await fetchProfilePage(username);
   if (res.status === 429 || (!res.ok && res.status !== 404)) {
-    // Page is throttled — the embed endpoint is far less rate-limited.
-    return fetchProfileFromEmbed(username);
+    // Page is throttled — fall back to search snippets + post embed.
+    return buildFallbackProfile(username);
   }
+
   if (res.status === 404 || /Page Not Found/i.test(html))
     throw new Error("لا يوجد حساب بهذا الاسم");
 
@@ -349,7 +315,7 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   const fullName =
     decodeText(unescapeBlob(html.match(/"full_name":"([\s\S]{0,120}?)","/)?.[1] ?? "")) ||
     (desc.match(/videos from ([^(]+)\s*\(/i)?.[1]?.trim() ?? username);
-  if (!pic) return fetchProfileFromEmbed(username);
+  // A missing picture is fine here: enrich() reads it from a post embed.
 
   let biography = decodeText(
     unescapeBlob(extractJsonString(html, "biography")),
@@ -398,7 +364,14 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
 // Bio via public search snippets (works even when Instagram blocks us entirely)
 // ---------------------------------------------------------------------------
 
-type SearchInfo = { biography: string; fullName: string };
+type SearchInfo = {
+  biography: string;
+  fullName: string;
+  followers: number;
+  following: number;
+  posts: number;
+  shortcodes: string[];
+};
 
 function cleanHtml(html: string) {
   return decodeHtml(html
@@ -414,56 +387,216 @@ function cleanHtml(html: string) {
     .replace(/\s+/g, " "));
 }
 
+/** Post/reel shortcodes of this account that appear in a search results page. */
+function shortcodesFromResults(html: string, username: string) {
+  const esc = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const raw = decodeHtml(html).replace(/&amp;/g, "&");
+  const direct = [...raw.matchAll(
+    new RegExp(`instagram\\.com/(?:${esc}/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]{6,20})`, "gi"),
+  )].map((m) => m[1]);
+  const proxied = [...raw.matchAll(/uddg=([^&"']+)/g)]
+    .map((m) => {
+      try {
+        return decodeURIComponent(m[1]);
+      } catch {
+        return "";
+      }
+    })
+    .map((l) => l.match(/instagram\.com\/(?:[\w.]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{6,20})/i)?.[1] ?? "")
+    .filter(Boolean);
+  return Array.from(new Set([...direct, ...proxied])).slice(0, 4);
+}
+
+/** Junk that proves the captured text is search-page chrome, not a bio. */
+const NOT_A_BIO =
+  /›|\bWikipedia\b|https?:\/\/|www\.|Followers,|Instagram photos and videos|Past (?:Day|Week|Month|Year)|Any Time/i;
+
 function parseSnippet(text: string, username: string): SearchInfo | null {
   const u = username.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const nameRe = new RegExp(`([^•|\\-–—"]{0,80}?)\\(@\\s*${u}\\s*\\)`, "i");
-  // The bio is the quoted part of the snippet; it must close with a quote or
-  // with the search engine's ellipsis, and never swallow the next result.
-  const closed = new RegExp(`\\(@\\s*${u}\\s*\\)[^"]{0,60}"([^"]{1,600})"`, "i");
-  const cut = new RegExp(
-    `\\(@\\s*${u}\\s*\\)[^"]{0,60}"([^"]{1,600}?)(?:\\u2026|\\.\\.\\.)`,
-    "i",
-  );
-  let bio = (text.match(closed)?.[1] ?? text.match(cut)?.[1] ?? "").trim();
-  if (!bio) bio = bioFromDescription(text, username);
-  // Reject snippets that bled into unrelated search results.
-  if (/›|\bWikipedia\b|https?:\/\//i.test(bio)) bio = "";
-  const name = text.match(nameRe)?.[1]?.trim() ?? "";
-  if (!bio && !name) return null;
-  return { biography: bio, fullName: name };
+  const marker = `(@${username})`;
+  const lower = text.toLowerCase();
+  const markerLower = marker.toLowerCase();
+
+  const out: SearchInfo = {
+    biography: "",
+    fullName: "",
+    followers: 0,
+    following: 0,
+    posts: 0,
+    shortcodes: [],
+  };
+
+  let at = lower.indexOf(markerLower);
+  let guard = 0;
+  while (at >= 0 && guard++ < 6) {
+    // Keep the parsing window tight: one search result only, cut before the
+    // next "(@someone)" so a neighbouring account never bleeds in.
+    const before = text.slice(Math.max(0, at - 200), at);
+    let after = text.slice(at + marker.length, at + marker.length + 700);
+    const nextAccount = after.search(/\(@/);
+    if (nextAccount > 0) after = after.slice(0, nextAccount);
+    const window = `${before}${marker}${after}`;
+
+    if (!out.followers) {
+      const stats = window.match(
+        /([\d.,]+\s*[KMkm]?)\s*[Ff]ollowers,\s*([\d.,]+\s*[KMkm]?)\s*[Ff]ollowing,\s*([\d.,]+\s*[KMkm]?)\s*[Pp]osts/,
+      );
+      if (stats) {
+        out.followers = parseCount(stats[1]);
+        out.following = parseCount(stats[2]);
+        out.posts = parseCount(stats[3]);
+      }
+    }
+
+    if (!out.fullName) {
+      const name = before.match(new RegExp(`([^•|"›\\n]{2,60}?)\\s*$`))?.[1]?.trim() ?? "";
+      if (name && !NOT_A_BIO.test(name) && !/^[-–—]/.test(name)) out.fullName = name;
+    }
+
+    if (!out.biography) {
+      const quoted =
+        after.match(/on Instagram\s*:\s*"([\s\S]{1,600}?)(?:"|\u2026|\.\.\.)/i)?.[1] ??
+        after.match(/^\s*[^"]{0,40}"([\s\S]{1,600}?)(?:"|\u2026|\.\.\.)/)?.[1] ??
+        "";
+      const bio = quoted.trim();
+      if (bio && !NOT_A_BIO.test(bio)) out.biography = bio;
+    }
+
+    at = lower.indexOf(markerLower, at + 1);
+  }
+
+  if (!out.biography) {
+    const fromDesc = bioFromDescription(text, username).slice(0, 600).trim();
+    if (fromDesc && !NOT_A_BIO.test(fromDesc)) out.biography = fromDesc;
+  }
+  const namedRe = new RegExp(`from\\s+([^•|"()]{2,60}?)\\s*\\(@\\s*${u}\\s*\\)`, "i");
+  if (!out.fullName) out.fullName = text.match(namedRe)?.[1]?.trim() ?? "";
+  if (out.fullName && NOT_A_BIO.test(out.fullName)) out.fullName = "";
+
+  if (!out.biography && !out.fullName && !out.followers) return null;
+  return out;
 }
 
 
+/** Search engines throttle too; skip an engine for a while after it refuses. */
+const engineCooldown = new Map<string, number>();
+/** Search snippets are stable, so keep whatever we found for the process life. */
+const searchMemory = new Map<string, SearchInfo>();
+
+const SEARCH_ENGINES: Array<{ name: string; url: (q: string) => string }> = [
+  { name: "brave", url: (q) => `https://search.brave.com/search?q=${encodeURIComponent(q)}` },
+  { name: "ddg", url: (q) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}` },
+  { name: "ddg-lite", url: (q) => `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}` },
+  { name: "bing", url: (q) => `https://www.bing.com/search?setlang=en&q=${encodeURIComponent(q)}` },
+  { name: "startpage", url: (q) => `https://www.startpage.com/sp/search?query=${encodeURIComponent(q)}` },
+  { name: "mojeek", url: (q) => `https://www.mojeek.com/search?q=${encodeURIComponent(q)}` },
+  { name: "google", url: (q) => `https://www.google.com/search?hl=en&q=${encodeURIComponent(q)}` },
+];
+
 /** Tries several public search engines until one yields the profile snippet. */
 async function fetchInfoFromSearch(username: string): Promise<SearchInfo | null> {
-  const queries = [`instagram.com/${username}/`, `"@${username}" instagram`];
-  const engines = [
-    (q: string) => `https://search.brave.com/search?q=${encodeURIComponent(q)}`,
-    (q: string) => `https://html.duckduckgo.com/html/?q=${encodeURIComponent(q)}`,
-    (q: string) => `https://www.startpage.com/sp/search?query=${encodeURIComponent(q)}`,
-    (q: string) => `https://search.marginalia.nu/search?query=${encodeURIComponent(q)}`,
-    (q: string) => `https://www.google.com/search?hl=en&q=${encodeURIComponent(q)}`,
+  const key = username.toLowerCase();
+  const remembered = searchMemory.get(key);
+  if (remembered?.biography) return remembered;
+
+  const queries = [
+    `site:instagram.com ${username}`,
+    `"@${username}" on Instagram`,
+    `instagram.com/${username}/`,
   ];
+  let best: SearchInfo | null = remembered ?? null;
   for (const q of queries) {
-    for (const engine of engines) {
+    for (const engine of SEARCH_ENGINES) {
+      if ((engineCooldown.get(engine.name) ?? 0) > Date.now()) continue;
       try {
-        const res = await fetch(engine(q), {
+        const res = await fetch(engine.url(q), {
           headers: {
             "User-Agent": randomUA(),
             Accept: "text/html,*/*",
             "Accept-Language": "en-US,en;q=0.9",
           },
         });
-        if (!res.ok) continue;
-        const hit = parseSnippet(cleanHtml(await res.text()), username);
-        if (hit?.biography) return hit;
+        const html = res.ok ? await res.text() : "";
+        // DuckDuckGo answers 200/202 with an "anomaly" page when throttling.
+        if (!html || /anomaly|unusual traffic|captcha/i.test(html.slice(0, 4000))) {
+          engineCooldown.set(engine.name, Date.now() + 5 * 60 * 1000);
+          continue;
+        }
+        const hit = parseSnippet(cleanHtml(html), username);
+        if (!hit) continue;
+        hit.shortcodes = shortcodesFromResults(html, username);
+        best = {
+          biography: best?.biography || hit.biography,
+          fullName: best?.fullName || hit.fullName,
+          followers: best?.followers || hit.followers,
+          following: best?.following || hit.following,
+          posts: best?.posts || hit.posts,
+          shortcodes: Array.from(new Set([...(best?.shortcodes ?? []), ...hit.shortcodes])),
+        };
+        if (best.biography) {
+          searchMemory.set(key, best);
+          return best;
+        }
       } catch {
-        /* engine unavailable */
+        engineCooldown.set(engine.name, Date.now() + 2 * 60 * 1000);
       }
+    }
+  }
+  if (best) searchMemory.set(key, best);
+  return best;
+}
+
+/**
+ * Profile embeds (/{user}/embed/) now answer 404, but post embeds are still
+ * public and carry the owner's signed avatar URL — so we read the avatar and
+ * post thumbnails from a recent post of that account instead.
+ */
+async function fetchProfileFromPostEmbed(
+  username: string,
+  known: string[] = [],
+): Promise<{ picture: string; fullName: string; recent: ProfilePost[] } | null> {
+  const search = await fetchInfoFromSearch(username);
+  const codes = Array.from(new Set([...known, ...(search?.shortcodes ?? [])])).slice(0, 4);
+  for (const code of codes) {
+    try {
+      const res = await fetchRetry(
+        `https://www.instagram.com/p/${code}/embed/captioned/`,
+        { "User-Agent": "Mozilla/5.0", Accept: "*/*" },
+        2,
+      );
+      if (!res.ok) continue;
+      const html = await res.text();
+      const owner = html.match(
+        /class="Avatar"\s+href="https:\/\/www\.instagram\.com\/([\w.]+)\//i,
+      )?.[1];
+      // Unavailable posts make Instagram serve someone else's content.
+      if (!owner || owner.toLowerCase() !== username.toLowerCase()) continue;
+      const picture = decodeHtml(
+        html.match(/class="Avatar"[\s\S]{0,600}?<img[^>]*src="([^"]+)"/i)?.[1] ?? "",
+      );
+      const thumb = decodeHtml(
+        html.match(/class="EmbeddedMediaImage"[^>]*src="([^"]+)"/i)?.[1] ??
+          html.match(/<img[^>]+class="EmbeddedMediaImage"[\s\S]{0,200}?src="([^"]+)"/i)?.[1] ??
+          "",
+      );
+      const fullName = decodeHtml(
+        html.match(/class="FullName"[^>]*>([^<]*)</i)?.[1] ?? "",
+      );
+      if (!picture) continue;
+      return {
+        picture,
+        fullName,
+        recent: thumb
+          ? [{ shortcode: code, thumb, isVideo: /GraphVideo|"is_video":true/.test(html) }]
+          : [],
+      };
+    } catch {
+      /* try the next post */
     }
   }
   return null;
 }
+
 
 /** Bios are stable, so once found we remember them for the whole process life. */
 const bioMemory = new Map<string, { biography: string; fullName: string }>();
@@ -471,22 +604,7 @@ const bioMemory = new Map<string, { biography: string; fullName: string }>();
 /** Fills gaps (bio / posts / picture) from the other public sources. */
 async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult> {
   let out = p;
-  if (!out.recent.length || !out.picture || !out.followers) {
-    try {
-      const e = await fetchProfileFromEmbed(out.username);
-      out = {
-        ...out,
-        fullName: out.fullName || e.fullName,
-        biography: out.biography || e.biography,
-        picture: out.picture || e.picture,
-        followers: out.followers || e.followers,
-        isVerified: out.isVerified || e.isVerified,
-        recent: out.recent.length ? out.recent : e.recent,
-      };
-    } catch {
-      /* embed unavailable */
-    }
-  }
+
   if (!out.biography && !fromPage) {
     // The bio only exists on the API / profile page, never on the embed.
     try {
@@ -506,10 +624,36 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
       /* page unavailable */
     }
   }
-  // Last resort for the bio: public search snippets, then process memory.
-  if (!out.biography) {
+  // Public search snippets carry the bio, name and counts even when Instagram
+  // blocks us entirely.
+  if (!out.biography || !out.followers) {
     const s = await fetchInfoFromSearch(out.username);
-    if (s) out = { ...out, biography: s.biography, fullName: out.fullName || s.fullName };
+    if (s) {
+      out = {
+        ...out,
+        biography: out.biography || s.biography,
+        fullName: out.fullName || s.fullName,
+        followers: out.followers || s.followers,
+        following: out.following || s.following,
+        posts: out.posts || s.posts,
+      };
+    }
+  }
+  // The avatar is only available on Instagram's CDN through a signed URL, so
+  // read it from a public post embed when the profile sources gave us nothing.
+  if (!out.picture || !out.recent.length) {
+    const fromPost = await fetchProfileFromPostEmbed(
+      out.username,
+      out.recent.map((r) => r.shortcode),
+    );
+    if (fromPost) {
+      out = {
+        ...out,
+        picture: out.picture || fromPost.picture,
+        fullName: out.fullName || fromPost.fullName,
+        recent: out.recent.length ? out.recent : fromPost.recent,
+      };
+    }
   }
   const remembered = bioMemory.get(out.username.toLowerCase());
   if (!out.biography && remembered?.biography) {
@@ -527,6 +671,7 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
   }
   return out;
 }
+
 
 const cache = new Map<string, { at: number; data: ProfileResult }>();
 const TTL = 6 * 60 * 60 * 1000;
@@ -586,49 +731,20 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
   const task = (async () => {
     try {
       const merged = merge(await resolveProfile(username), hit?.data);
-      if (merged.biography) cache.set(key, { at: Date.now(), data: merged });
+      if (merged.biography || merged.picture) cache.set(key, { at: Date.now(), data: merged });
       return merged;
     } catch (err) {
       // Never fail a search because Instagram throttled us: serve the last
       // known snapshot, or a search-only snapshot, instead of an error.
       if (hit?.data) return hit.data;
       if (err instanceof Error && err.message.includes("لا يوجد")) throw err;
-      const s = await fetchInfoFromSearch(username);
-      if (s) {
-        const fallback: ProfileResult = {
-          username,
-          fullName: s.fullName || username,
-          biography: s.biography,
-          picture: "",
-          followers: 0,
-          following: 0,
-          posts: 0,
-          isPrivate: false,
-          isVerified: false,
-          externalUrl: null,
-          recent: [],
-        };
-        cache.set(key, { at: Date.now(), data: fallback });
-        return fallback;
-      }
       // A rate limit is an upstream availability issue, not a user-facing
-      // application error. Return a stable partial profile and cache it briefly
-      // instead of rejecting the server function and blanking the page.
-      const fallback: ProfileResult = {
-        username,
-        fullName: username,
-        biography: "",
-        picture: "",
-        followers: 0,
-        following: 0,
-        posts: 0,
-        isPrivate: false,
-        isVerified: false,
-        externalUrl: null,
-        recent: [],
-      };
+      // application error: serve a snapshot built from public search snippets
+      // and a post embed avatar, and cache it briefly.
+      const fallback = await buildFallbackProfile(username);
       cache.set(key, { at: Date.now(), data: fallback });
       return fallback;
+
     } finally {
       inflight.delete(key);
     }
