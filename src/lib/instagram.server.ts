@@ -565,22 +565,7 @@ const bioMemory = new Map<string, { biography: string; fullName: string }>();
 /** Fills gaps (bio / posts / picture) from the other public sources. */
 async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult> {
   let out = p;
-  if (!out.recent.length || !out.picture || !out.followers) {
-    try {
-      const e = await fetchProfileFromEmbed(out.username);
-      out = {
-        ...out,
-        fullName: out.fullName || e.fullName,
-        biography: out.biography || e.biography,
-        picture: out.picture || e.picture,
-        followers: out.followers || e.followers,
-        isVerified: out.isVerified || e.isVerified,
-        recent: out.recent.length ? out.recent : e.recent,
-      };
-    } catch {
-      /* embed unavailable */
-    }
-  }
+
   if (!out.biography && !fromPage) {
     // The bio only exists on the API / profile page, never on the embed.
     try {
