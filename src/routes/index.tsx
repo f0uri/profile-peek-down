@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Download,
   Link2,
@@ -392,6 +392,9 @@ function WelcomeSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** ذاكرة محلية للحسابات: بحث متكرر بنفس الاسم لا يُرسل أي طلب جديد. */
+const userCache = new Map<string, ProfileResult>();
+
 function Home() {
   const [tab, setTab] = useState<"media" | "user">("media");
   const [urlInput, setUrlInput] = useState("");
@@ -404,6 +407,7 @@ function Home() {
 
   const runMedia = useServerFn(getMedia);
   const runProfile = useServerFn(getProfile);
+  const pending = useRef<string | null>(null);
 
   useEffect(() => {
     if (!sessionStorage.getItem("dhikr-seen")) setWelcome(true);
