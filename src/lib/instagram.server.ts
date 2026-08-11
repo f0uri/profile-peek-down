@@ -500,9 +500,9 @@ async function fetchInfoFromSearch(username: string): Promise<SearchInfo | null>
   if (remembered?.biography) return remembered;
 
   const queries = [
+    `site:instagram.com ${username}`,
+    `"@${username}" on Instagram`,
     `instagram.com/${username}/`,
-    `"@${username}" instagram`,
-    `${username} instagram profile`,
   ];
   let best: SearchInfo | null = remembered ?? null;
   for (const q of queries) {
@@ -731,7 +731,7 @@ export async function fetchProfileByUsername(username: string): Promise<ProfileR
   const task = (async () => {
     try {
       const merged = merge(await resolveProfile(username), hit?.data);
-      if (merged.biography) cache.set(key, { at: Date.now(), data: merged });
+      if (merged.biography || merged.picture) cache.set(key, { at: Date.now(), data: merged });
       return merged;
     } catch (err) {
       // Never fail a search because Instagram throttled us: serve the last
