@@ -634,10 +634,36 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
       /* page unavailable */
     }
   }
-  // Last resort for the bio: public search snippets, then process memory.
-  if (!out.biography) {
+  // Public search snippets carry the bio, name and counts even when Instagram
+  // blocks us entirely.
+  if (!out.biography || !out.followers) {
     const s = await fetchInfoFromSearch(out.username);
-    if (s) out = { ...out, biography: s.biography, fullName: out.fullName || s.fullName };
+    if (s) {
+      out = {
+        ...out,
+        biography: out.biography || s.biography,
+        fullName: out.fullName || s.fullName,
+        followers: out.followers || s.followers,
+        following: out.following || s.following,
+        posts: out.posts || s.posts,
+      };
+    }
+  }
+  // The avatar is only available on Instagram's CDN through a signed URL, so
+  // read it from a public post embed when the profile sources gave us nothing.
+  if (!out.picture || !out.recent.length) {
+    const fromPost = await fetchProfileFromPostEmbed(
+      out.username,
+      out.recent.map((r) => r.shortcode),
+    );
+    if (fromPost) {
+      out = {
+        ...out,
+        picture: out.picture || fromPost.picture,
+        fullName: out.fullName || fromPost.fullName,
+        recent: out.recent.length ? out.recent : fromPost.recent,
+      };
+    }
   }
   const remembered = bioMemory.get(out.username.toLowerCase());
   if (!out.biography && remembered?.biography) {
@@ -655,6 +681,7 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
   }
   return out;
 }
+
 
 const cache = new Map<string, { at: number; data: ProfileResult }>();
 const TTL = 6 * 60 * 60 * 1000;
