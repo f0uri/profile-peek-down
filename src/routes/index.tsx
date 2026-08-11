@@ -414,17 +414,29 @@ function Home() {
     setWelcome(false);
   };
 
-  const lookupUser = async (value: string) => {
-    const name = value.trim().replace(/^@/, "");
+  const lookupUser = async (value: string, force = false) => {
+    const name = value.trim().replace(/^@/, "").toLowerCase();
     if (!name) return;
+    // نتيجة محفوظة محليًا: لا نرسل أي طلب جديد (يمنع الحظر)
+    const cached = userCache.get(name);
+    if (cached && !force) {
+      setProfile(cached);
+      setError(null);
+      return;
+    }
+    if (pending.current === name) return;
+    pending.current = name;
     setLoading(true);
     setError(null);
     try {
-      setProfile(await runProfile({ data: { username: name } }));
+      const res = await runProfile({ data: { username: name } });
+      userCache.set(name, res);
+      setProfile(res);
     } catch (e) {
       setError(errText(e));
       setProfile(null);
     } finally {
+      pending.current = null;
       setLoading(false);
     }
   };
@@ -433,10 +445,11 @@ function Home() {
   useEffect(() => {
     if (tab !== "user") return;
     const name = userInput.trim().replace(/^@/, "");
-    if (!/^[A-Za-z0-9_.]{2,30}$/.test(name)) return;
-    const t = setTimeout(() => void lookupUser(name), 700);
+    if (!/^[A-Za-z0-9_.]{3,30}$/.test(name)) return;
+    const t = setTimeout(() => void lookupUser(name), 1200);
     return () => clearTimeout(t);
   }, [userInput, tab]);
+
 
   const submit = async () => {
     if (tab === "user") return lookupUser(userInput);
