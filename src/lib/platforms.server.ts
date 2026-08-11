@@ -3,14 +3,17 @@ import type { MediaResult, MediaItem } from "./instagram.server";
 export type Platform = "instagram" | "tiktok" | "x" | "facebook" | "youtube";
 
 export function detectPlatform(url: string): Platform | null {
-  const u = url.toLowerCase();
-  if (/instagram\.com/.test(u)) return "instagram";
-  if (/tiktok\.com/.test(u)) return "tiktok";
-  if (/(twitter\.com|x\.com)/.test(u)) return "x";
-  if (/(facebook\.com|fb\.watch|fb\.com)/.test(u)) return "facebook";
-  if (/(youtube\.com|youtu\.be)/.test(u)) return "youtube";
+  const u = url.toLowerCase().trim();
+  if (/(instagram\.com|instagr\.am|ig\.me)/.test(u)) return "instagram";
+  if (/tiktok\.com|tiktok\.link/.test(u)) return "tiktok";
+  if (/(twitter\.com|x\.com|t\.co\/)/.test(u)) return "x";
+  if (/(facebook\.com|fb\.watch|fb\.me|fb\.com)/.test(u)) return "facebook";
+  if (/(youtube\.com|youtube-nocookie\.com|youtu\.be)/.test(u)) return "youtube";
+  // ليس رابطًا: نعتبره كود منشور إنستغرام
+  if (!/^https?:\/\//.test(u) && /^[A-Za-z0-9_-]{5,20}$/.test(url.trim())) return "instagram";
   return null;
 }
+
 
 const COBALT = "https://co.otomir23.me/";
 
@@ -110,7 +113,11 @@ async function fetchYouTube(url: string): Promise<MediaResult> {
 
 export async function fetchAnyMedia(url: string): Promise<MediaResult & { platform: Platform }> {
   const platform = detectPlatform(url);
-  if (!platform) throw new Error("المنصة غير مدعومة، الروابط المدعومة: انستغرام، تيك توك، إكس، فيسبوك، يوتيوب");
+  if (!platform)
+    throw new Error(
+      "الصق رابط منشور صحيح من إنستغرام أو تيك توك أو إكس أو فيسبوك أو يوتيوب (للبحث عن حساب استخدم تبويب البحث بالمستخدم)",
+    );
+
 
   if (platform === "instagram") {
     const { parseShortcode, fetchMediaByShortcode } = await import("./instagram.server");
