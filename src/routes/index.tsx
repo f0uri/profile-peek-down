@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Download,
   Link2,
@@ -392,6 +392,9 @@ function WelcomeSheet({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** ذاكرة محلية للحسابات: بحث متكرر بنفس الاسم لا يُرسل أي طلب جديد. */
+const userCache = new Map<string, ProfileResult>();
+
 function Home() {
   const [tab, setTab] = useState<"media" | "user">("media");
   const [urlInput, setUrlInput] = useState("");
@@ -404,6 +407,7 @@ function Home() {
 
   const runMedia = useServerFn(getMedia);
   const runProfile = useServerFn(getProfile);
+  const pending = useRef<string | null>(null);
 
   useEffect(() => {
     if (!sessionStorage.getItem("dhikr-seen")) setWelcome(true);
@@ -414,17 +418,29 @@ function Home() {
     setWelcome(false);
   };
 
-  const lookupUser = async (value: string) => {
-    const name = value.trim().replace(/^@/, "");
+  const lookupUser = async (value: string, force = false) => {
+    const name = value.trim().replace(/^@/, "").toLowerCase();
     if (!name) return;
+    // نتيجة محفوظة محليًا: لا نرسل أي طلب جديد (يمنع الحظر)
+    const cached = userCache.get(name);
+    if (cached && !force) {
+      setProfile(cached);
+      setError(null);
+      return;
+    }
+    if (pending.current === name) return;
+    pending.current = name;
     setLoading(true);
     setError(null);
     try {
-      setProfile(await runProfile({ data: { username: name } }));
+      const res = await runProfile({ data: { username: name } });
+      userCache.set(name, res);
+      setProfile(res);
     } catch (e) {
       setError(errText(e));
       setProfile(null);
     } finally {
+      pending.current = null;
       setLoading(false);
     }
   };
@@ -433,10 +449,11 @@ function Home() {
   useEffect(() => {
     if (tab !== "user") return;
     const name = userInput.trim().replace(/^@/, "");
-    if (!/^[A-Za-z0-9_.]{2,30}$/.test(name)) return;
-    const t = setTimeout(() => void lookupUser(name), 700);
+    if (!/^[A-Za-z0-9_.]{3,30}$/.test(name)) return;
+    const t = setTimeout(() => void lookupUser(name), 1200);
     return () => clearTimeout(t);
   }, [userInput, tab]);
+
 
   const submit = async () => {
     if (tab === "user") return lookupUser(userInput);

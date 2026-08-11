@@ -14,19 +14,37 @@ function randomUA() {
   return UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
 }
 
+/**
+ * Global pacing gate: every upstream request is serialized with a minimum gap,
+ * so many username searches in a row never look like a burst to Instagram.
+ */
+const MIN_GAP = 1200;
+let gate: Promise<void> = Promise.resolve();
+let lastAt = 0;
+function paced<T>(task: () => Promise<T>): Promise<T> {
+  const run = gate.then(async () => {
+    const wait = Math.max(0, MIN_GAP - (Date.now() - lastAt)) + Math.random() * 250;
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    lastAt = Date.now();
+  });
+  gate = run.catch(() => {});
+  return run.then(task);
+}
+
 /** Instagram answers 429 aggressively; retry a few times with backoff + UA rotation. */
 async function fetchRetry(
   url: string,
   headers: Record<string, string>,
   attempts = 3,
 ): Promise<Response> {
-  let res = await fetch(url, { headers });
+  let res = await paced(() => fetch(url, { headers }));
   for (let i = 1; i < attempts && (res.status === 429 || res.status >= 500); i++) {
-    await new Promise((r) => setTimeout(r, 400 * i + Math.random() * 300));
-    res = await fetch(url, { headers: { ...headers, "User-Agent": randomUA() } });
+    await new Promise((r) => setTimeout(r, 800 * i + Math.random() * 400));
+    res = await paced(() => fetch(url, { headers: { ...headers, "User-Agent": randomUA() } }));
   }
   return res;
 }
+
 
 
 export type MediaItem = {
@@ -500,7 +518,7 @@ async function enrich(p: ProfileResult, fromPage = false): Promise<ProfileResult
 }
 
 const cache = new Map<string, { at: number; data: ProfileResult }>();
-const TTL = 30 * 60 * 1000;
+const TTL = 6 * 60 * 60 * 1000;
 /** Coalesces concurrent lookups of the same username into one upstream call. */
 const inflight = new Map<string, Promise<ProfileResult>>();
 
@@ -519,11 +537,33 @@ function merge(fresh: ProfileResult, prev?: ProfileResult): ProfileResult {
   };
 }
 
+async function refreshInBackground(key: string, username: string, prev: ProfileResult) {
+  const task = (async () => {
+    try {
+      const merged = merge(await resolveProfile(username), prev);
+      if (merged.biography) cache.set(key, { at: Date.now(), data: merged });
+      return merged;
+    } catch {
+      return prev;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+  inflight.set(key, task);
+  await task.catch(() => {});
+}
+
 export async function fetchProfileByUsername(username: string): Promise<ProfileResult> {
   const key = username.toLowerCase();
   const hit = cache.get(key);
   // Cached and complete enough → answer instantly, no upstream request at all.
   if (hit && Date.now() - hit.at < TTL && hit.data.biography && hit.data.picture) {
+    return hit.data;
+  }
+  // Stale snapshot: answer instantly and refresh in the background, so rapid
+  // searches never hit Instagram twice for the same account.
+  if (hit && hit.data.biography && hit.data.picture) {
+    if (!inflight.has(key)) void refreshInBackground(key, username, hit.data);
     return hit.data;
   }
   const running = inflight.get(key);
@@ -572,7 +612,7 @@ async function resolveProfile(username: string): Promise<ProfileResult> {
   for (let attempt = 0; attempt < 2 && !u; attempt++) {
     if (attempt) await new Promise((r) => setTimeout(r, 700));
     try {
-      const res = await fetch(
+      const res = await paced(() => fetch(
         `https://www.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`,
         {
           headers: {
@@ -581,7 +621,7 @@ async function resolveProfile(username: string): Promise<ProfileResult> {
             Accept: "*/*",
           },
         },
-      );
+      ));
       if (res.status === 404) throw new Error("لا يوجد حساب بهذا الاسم");
       if (!res.ok) continue;
       u = ((await res.json()) as any)?.data?.user ?? null;
