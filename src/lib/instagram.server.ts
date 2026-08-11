@@ -315,7 +315,7 @@ async function fetchProfileFromPage(username: string): Promise<ProfileResult> {
   const fullName =
     decodeText(unescapeBlob(html.match(/"full_name":"([\s\S]{0,120}?)","/)?.[1] ?? "")) ||
     (desc.match(/videos from ([^(]+)\s*\(/i)?.[1]?.trim() ?? username);
-  if (!pic) return fetchProfileFromEmbed(username);
+  // A missing picture is fine here: enrich() reads it from a post embed.
 
   let biography = decodeText(
     unescapeBlob(extractJsonString(html, "biography")),
