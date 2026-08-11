@@ -14,19 +14,37 @@ function randomUA() {
   return UA_POOL[Math.floor(Math.random() * UA_POOL.length)];
 }
 
+/**
+ * Global pacing gate: every upstream request is serialized with a minimum gap,
+ * so many username searches in a row never look like a burst to Instagram.
+ */
+const MIN_GAP = 1200;
+let gate: Promise<void> = Promise.resolve();
+let lastAt = 0;
+function paced<T>(task: () => Promise<T>): Promise<T> {
+  const run = gate.then(async () => {
+    const wait = Math.max(0, MIN_GAP - (Date.now() - lastAt)) + Math.random() * 250;
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    lastAt = Date.now();
+  });
+  gate = run.catch(() => {});
+  return run.then(task);
+}
+
 /** Instagram answers 429 aggressively; retry a few times with backoff + UA rotation. */
 async function fetchRetry(
   url: string,
   headers: Record<string, string>,
   attempts = 3,
 ): Promise<Response> {
-  let res = await fetch(url, { headers });
+  let res = await paced(() => fetch(url, { headers }));
   for (let i = 1; i < attempts && (res.status === 429 || res.status >= 500); i++) {
-    await new Promise((r) => setTimeout(r, 400 * i + Math.random() * 300));
-    res = await fetch(url, { headers: { ...headers, "User-Agent": randomUA() } });
+    await new Promise((r) => setTimeout(r, 800 * i + Math.random() * 400));
+    res = await paced(() => fetch(url, { headers: { ...headers, "User-Agent": randomUA() } }));
   }
   return res;
 }
+
 
 
 export type MediaItem = {
